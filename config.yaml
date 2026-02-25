@@ -1,0 +1,24 @@
+server:
+  port: 3456
+  host: "0.0.0.0"
+  tls_cert: ""    # e.g. /etc/ssl/certs/picogallery.crt
+  tls_key: ""     # e.g. /etc/ssl/private/picogallery.key
+
+storage:
+  root: "./data/storage"
+
+database:
+  path: "./data/picogallery.db"
+
+thumbnails:
+  workers: 2          # Keep ≤ 2 on SBCs to avoid CPU saturation
+  jpeg_quality: 85
+
+auth:
+  jwt_secret: "change-this-to-a-long-random-string-in-production"
+  jwt_expiry_hours: 24
+
+upload:
+  max_file_size_mb: 500
+  allowed_video: true
+  allowed_raw: false   # Set true if libraw-bin is installed on PATH

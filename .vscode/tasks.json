@@ -1,0 +1,15 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run PicoGallery",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"run"
+			],
+			"isBackground": false,
+			"group": "build"
+		}
+	]
+}

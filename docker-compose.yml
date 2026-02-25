@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  picogallery:
+    image: picogallery/picogallery:latest
+    # Or build locally:
+    # build: .
+    container_name: picogallery
+    restart: unless-stopped
+    ports:
+      - "3456:3456"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - /mnt/photos:/data/storage       # Point to your USB drive or NAS mount
+    environment:
+      - PICO_JWT_SECRET=change_me_to_a_long_random_string
+      - PICO_STORAGE_ROOT=/data/storage
+      - PICO_DB_PATH=/data/storage/picogallery.db
+    # Optional: resource limits for SBC
+    deploy:
+      resources:
+        limits:
+          memory: 512M
