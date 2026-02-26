@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>PicoGallery</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%23000'/><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%23b8860b'/><stop offset='40%25' stop-color='%23f5c842'/><stop offset='60%25' stop-color='%23ffd700'/><stop offset='100%25' stop-color='%239a6f00'/></linearGradient></defs><polyline points='18,25 50,72 82,25' fill='none' stroke='url(%23g)' stroke-width='12' stroke-linejoin='round' stroke-linecap='round'/><path d='M33,25 Q50,10 67,25' fill='none' stroke='url(%23g)' stroke-width='9' stroke-linecap='round'/></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet" />
@@ -19,8 +20,9 @@
   --text:     #e8e9ec;
   --text2:    #8b8fa8;
   --text3:    #555972;
-  --accent:   #c8f04e;
-  --accent2:  #9bbc3a;
+  --accent:   #f5c842;
+  --accent2:  #b8860b;
+  --gold-gradient: linear-gradient(135deg, #9a6f00 0%, #c8860a 15%, #d4a017 30%, #f5c842 50%, #d4a017 70%, #c8860a 85%, #9a6f00 100%);
   --red:      #ff5f5f;
   --blue:     #5fa8ff;
   --radius:   10px;
@@ -80,11 +82,12 @@ a { color: inherit; text-decoration: none; }
 }
 .logo-icon {
   width: 32px; height: 32px;
-  background: var(--accent);
+  background: var(--gold-gradient);
   border-radius: 8px;
   display: grid;
   place-items: center;
   flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(180,120,0,0.4);
 }
 .logo-icon svg { color: #0e0f11; }
 .logo-text {
@@ -135,7 +138,7 @@ a { color: inherit; text-decoration: none; }
 }
 .nav-item:hover { background: var(--surface2); color: var(--text); }
 .nav-item.active {
-  background: rgba(200,240,78,0.1);
+  background: rgba(212,160,23,0.12);
   color: var(--accent);
 }
 .nav-item .nav-icon { width: 16px; height: 16px; flex-shrink: 0; opacity: 0.7; }
@@ -151,9 +154,9 @@ a { color: inherit; text-decoration: none; }
   border: 1px solid var(--border);
 }
 .nav-item.active .nav-badge {
-  background: rgba(200,240,78,0.15);
+  background: rgba(212,160,23,0.15);
   color: var(--accent);
-  border-color: rgba(200,240,78,0.3);
+  border-color: rgba(212,160,23,0.3);
 }
 
 .sidebar-footer {
@@ -173,13 +176,14 @@ a { color: inherit; text-decoration: none; }
 .user-avatar {
   width: 28px; height: 28px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), var(--blue));
+  background: var(--gold-gradient);
   display: grid;
   place-items: center;
   font-size: 0.7rem;
   font-weight: 600;
-  color: #0e0f11;
+  color: #1a0e00;
   flex-shrink: 0;
+  box-shadow: 0 1px 6px rgba(180,120,0,0.35);
 }
 .user-name { font-size: 0.8rem; font-weight: 500; color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .user-role { font-size: 0.65rem; color: var(--text3); font-family: var(--font-mono); }
@@ -224,10 +228,12 @@ a { color: inherit; text-decoration: none; }
   white-space: nowrap;
 }
 .btn-primary {
-  background: var(--accent);
-  color: #0e0f11;
+  background: var(--gold-gradient);
+  color: #1a0e00;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.25);
+  box-shadow: 0 2px 8px rgba(180,120,0,0.35), inset 0 1px 1px rgba(255,240,150,0.3);
 }
-.btn-primary:hover { background: var(--accent2); transform: translateY(-1px); }
+.btn-primary:hover { background: linear-gradient(135deg, #b8860b 0%, #d4a017 25%, #f5d060 50%, #d4a017 75%, #b8860b 100%); transform: translateY(-1px); box-shadow: 0 4px 14px rgba(180,120,0,0.45); }
 .btn-ghost {
   background: transparent;
   color: var(--text2);
@@ -317,8 +323,8 @@ a { color: inherit; text-decoration: none; }
 }
 .chip:hover { border-color: var(--border2); color: var(--text); }
 .chip.active {
-  background: rgba(200,240,78,0.12);
-  border-color: rgba(200,240,78,0.4);
+  background: rgba(212,160,23,0.12);
+  border-color: rgba(212,160,23,0.4);
   color: var(--accent);
 }
 
@@ -621,7 +627,7 @@ a { color: inherit; text-decoration: none; }
   border: 1px solid transparent;
 }
 .file-row:hover { background: var(--surface); border-color: var(--border); }
-.file-row.selected { background: rgba(200,240,78,0.07); border-color: rgba(200,240,78,0.25); }
+.file-row.selected { background: rgba(212,160,23,0.07); border-color: rgba(212,160,23,0.25); }
 .file-icon {
   width: 32px; height: 32px;
   border-radius: 8px;
@@ -630,7 +636,7 @@ a { color: inherit; text-decoration: none; }
   font-size: 1.1rem;
 }
 .file-icon.dir { background: rgba(95,168,255,0.12); }
-.file-icon.img { background: rgba(200,240,78,0.1); }
+.file-icon.img { background: rgba(212,160,23,0.1); }
 .file-icon.vid { background: rgba(150,100,255,0.12); }
 .file-icon.other { background: var(--surface2); }
 .file-name { flex: 1; font-size: 0.875rem; font-weight: 400; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -760,7 +766,7 @@ a { color: inherit; text-decoration: none; }
 }
 .progress-fill {
   height: 100%;
-  background: var(--accent);
+  background: var(--gold-gradient);
   border-radius: 2px;
   transition: width 0.3s;
 }
@@ -847,11 +853,12 @@ a { color: inherit; text-decoration: none; }
 }
 .login-logo-icon {
   width: 52px; height: 52px;
-  background: var(--accent);
+  background: var(--gold-gradient);
   border-radius: 14px;
   display: grid;
   place-items: center;
   margin-bottom: 12px;
+  box-shadow: 0 4px 16px rgba(180,120,0,0.45);
 }
 .login-logo-icon svg { width: 26px; height: 26px; color: #0e0f11; }
 .login-logo h1 {
@@ -874,18 +881,20 @@ a { color: inherit; text-decoration: none; }
 .login-btn {
   width: 100%;
   padding: 11px;
-  background: var(--accent);
-  color: #0e0f11;
+  background: var(--gold-gradient);
+  color: #1a0e00;
   border: none;
   border-radius: 8px;
   font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
-  transition: background var(--transition);
+  transition: all var(--transition);
   margin-top: 8px;
   font-family: inherit;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.2);
+  box-shadow: 0 2px 10px rgba(180,120,0,0.4), inset 0 1px 1px rgba(255,240,150,0.3);
 }
-.login-btn:hover { background: var(--accent2); }
+.login-btn:hover { background: linear-gradient(135deg, #b8860b 0%, #d4a017 25%, #f5d060 50%, #d4a017 75%, #b8860b 100%); box-shadow: 0 4px 16px rgba(180,120,0,0.5); }
 .login-server {
   font-family: var(--font-mono);
   font-size: 0.7rem;
@@ -2064,7 +2073,7 @@ async function renderAdmin() {
   users.users?.forEach(u => {
     const perUser = stats.per_user?.find(p => p.user_id === u.id);
     html += `<div class="file-row">
-      <div class="user-avatar" style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--blue));display:grid;place-items:center;font-size:0.8rem;font-weight:600;color:#0e0f11;flex-shrink:0;">${(u.name||'U')[0].toUpperCase()}</div>
+      <div class="user-avatar" style="width:32px;height:32px;border-radius:50%;background:var(--gold-gradient);display:grid;place-items:center;font-size:0.8rem;font-weight:600;color:#1a0e00;flex-shrink:0;box-shadow:0 1px 6px rgba(180,120,0,0.35);">${(u.name||'U')[0].toUpperCase()}</div>
       <div class="file-name">
         ${escHtml(u.name)}
         <div style="font-size:0.7rem;color:var(--text3);font-family:var(--font-mono)">${escHtml(u.email)}</div>
