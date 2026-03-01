@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -194,28 +195,63 @@ func (h *Handler) ServeThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	size := r.URL.Query().Get("size")
-	if size != "thumb" {
+	// Map API size names to on-disk folder names.
+	// "thumb" is kept for backward-compatibility with older clients.
+	var size string
+	switch r.URL.Query().Get("size") {
+	case "small", "thumb":
+		size = "small"
+	case "large":
+		size = "large"
+	case "blur":
+		size = "blur"
+	default:
 		size = "preview"
 	}
 
 	thumbPath := filepath.Join(h.svc.thumbRoot, size, id[:2], id+".jpg")
-	if _, err := os.Stat(thumbPath); os.IsNotExist(err) {
-		// Thumb not ready — serve original scaled on-the-fly
-		var origPath string
-		_ = h.db.QueryRow(`SELECT original_path FROM assets WHERE id=?`, id).Scan(&origPath)
+	log.Printf("[thumb] path=%s", thumbPath)
+	if statErr := func() error { _, e := os.Stat(thumbPath); return e }(); os.IsNotExist(statErr) {
+		// Thumb not ready — serve original scaled on-the-fly.
+		// Never cache this response: thumbnail may be generated shortly after.
+		w.Header().Set("Cache-Control", "no-store")
+		var origPath, mediaType string
+		_ = h.db.QueryRow(`SELECT original_path, media_type FROM assets WHERE id=?`, id).Scan(&origPath, &mediaType)
+		log.Printf("[thumb] fallback: origPath=%s mediaType=%s isHEICType=%v isHEICPath=%v", origPath, mediaType, isHEICType(mediaType), isHEICPath(origPath))
 		if origPath == "" {
 			writeError(w, "ASSET_NOT_FOUND", "Thumbnail not available.", http.StatusNotFound)
+			return
+		}
+		// HEIC/HEIF: browsers can't render natively — transcode to JPEG on-the-fly
+		if isHEICType(mediaType) || isHEICPath(origPath) {
+			data := heicToJPEGBytes(origPath)
+			if data == nil {
+				writeError(w, "HEIC_CONVERTER_MISSING",
+					"Install imagemagick on the server (apt install imagemagick).",
+					http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write(data)
 			return
 		}
 		w.Header().Set("Content-Type", "image/jpeg")
 		http.ServeFile(w, r, origPath)
 		return
+	} else {
+		log.Printf("[thumb] stat result: err=%v (IsNotExist=%v)", statErr, os.IsNotExist(statErr))
 	}
 
+	data, err := os.ReadFile(thumbPath)
+	if err != nil {
+		http.Error(w, "thumbnail read error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	http.ServeFile(w, r, thumbPath)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 // PATCH /api/v1/assets/{id}
@@ -265,9 +301,9 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	if origPath != "" {
 		_ = os.Remove(origPath)
 	}
-	// Remove thumbnails
-	for _, size := range []string{"small", "preview"} {
-		_ = os.Remove(filepath.Join(h.svc.thumbRoot, size, id[:2], id+".jpg"))
+	// Remove all thumbnail tiers from SSD
+	for _, sz := range []string{"blur", "small", "preview", "large"} {
+		_ = os.Remove(filepath.Join(h.svc.thumbRoot, sz, id[:2], id+".jpg"))
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Asset deleted."})
 }
@@ -293,8 +329,8 @@ func (h *Handler) BulkDelete(w http.ResponseWriter, r *http.Request) {
 		if origPath != "" {
 			_ = os.Remove(origPath)
 		}
-		for _, size := range []string{"small", "preview"} {
-			_ = os.Remove(filepath.Join(h.svc.thumbRoot, size, id[:2], id+".jpg"))
+		for _, sz := range []string{"blur", "small", "preview", "large"} {
+			_ = os.Remove(filepath.Join(h.svc.thumbRoot, sz, id[:2], id+".jpg"))
 		}
 		deleted++
 	}

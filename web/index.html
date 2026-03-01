@@ -1675,7 +1675,24 @@ function showLbItem() {
 
   if (a.media_type?.startsWith('image')) {
     const previewUrl = State.serverUrl + '/api/v1/assets/' + a.id + '/thumbnail?size=preview&token=' + encodeURIComponent(State.token);
-    wrap.innerHTML = `<img id="lb-img" src="${previewUrl}" alt="" data-original="${origUrl}" />`;
+    wrap.innerHTML = `<img id="lb-img" src="" alt="" data-original="${origUrl}" />`;
+    // Load via fetch+blob to bypass browser disk cache (avoids stale HEIC→JPEG cached responses)
+    fetch(previewUrl, {cache: 'no-store'})
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+      .then(blob => {
+        const img = document.getElementById('lb-img');
+        if (!img) return;
+        const blobUrl = URL.createObjectURL(blob);
+        img.onload = () => URL.revokeObjectURL(blobUrl);
+        img.src = blobUrl;
+      })
+      .catch(e => {
+        const img = document.getElementById('lb-img');
+        if (!img) return;
+        img.style.display = 'none';
+        img.parentNode.insertAdjacentHTML('beforeend',
+          `<div style="color:#f66;padding:20px;font-size:13px">⚠ Failed to load image: ${e.message}</div>`);
+      });
   } else if (a.media_type === 'application/pdf') {
     wrap.innerHTML = `<div class="lb-doc-preview"><iframe src="${origUrl}"></iframe></div>`;
   } else if (a.media_type?.startsWith('text/')) {

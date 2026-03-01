@@ -23,7 +23,10 @@ func enableWAL(db *sql.DB) error {
 	return err
 }
 
-func apply(db *sql.DB, version int, sql string) error {
+// apply runs a list of SQL statements as a single migration version.
+// Each statement is executed individually inside one transaction so that
+// ALTER TABLE (single-column-at-a-time in SQLite) works correctly.
+func apply(db *sql.DB, version int, stmts []string) error {
 	var exists int
 	_ = db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=?`, version).Scan(&exists)
 	if exists > 0 {
@@ -33,9 +36,18 @@ func apply(db *sql.DB, version int, sql string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(sql); err != nil {
-		_ = tx.Rollback()
-		return err
+	for _, s := range stmts {
+		if s == "" {
+			continue
+		}
+		if _, err := tx.Exec(s); err != nil {
+			_ = tx.Rollback()
+			preview := s
+			if len(preview) > 60 {
+				preview = preview[:60]
+			}
+			return fmt.Errorf("stmt %q: %w", preview, err)
+		}
 	}
 	if _, err := tx.Exec(`INSERT INTO schema_migrations(version) VALUES(?)`, version); err != nil {
 		_ = tx.Rollback()
@@ -44,11 +56,11 @@ func apply(db *sql.DB, version int, sql string) error {
 	return tx.Commit()
 }
 
-var all = []string{
+var all = [][]string{
 	// Migration 1: base schema
-	`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);
-
-CREATE TABLE IF NOT EXISTS users (
+	{
+		`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`,
+		`CREATE TABLE IF NOT EXISTS users (
 	id          TEXT PRIMARY KEY,
 	email       TEXT NOT NULL UNIQUE,
 	name        TEXT NOT NULL,
@@ -57,18 +69,16 @@ CREATE TABLE IF NOT EXISTS users (
 	quota_bytes INTEGER NOT NULL DEFAULT 10737418240,
 	created_at  TEXT NOT NULL,
 	updated_at  TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS api_keys (
+)`,
+		`CREATE TABLE IF NOT EXISTS api_keys (
 	id          TEXT PRIMARY KEY,
 	user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	name        TEXT NOT NULL,
 	key_hash    TEXT NOT NULL UNIQUE,
 	created_at  TEXT NOT NULL,
 	last_used_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS assets (
+)`,
+		`CREATE TABLE IF NOT EXISTS assets (
 	id              TEXT PRIMARY KEY,
 	user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	filename        TEXT NOT NULL,
@@ -95,14 +105,12 @@ CREATE TABLE IF NOT EXISTS assets (
 	exif_shutter    TEXT,
 	thumb_small     INTEGER NOT NULL DEFAULT 0,
 	thumb_preview   INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS idx_assets_user_taken ON assets(user_id, taken_at DESC);
-CREATE INDEX IF NOT EXISTS idx_assets_checksum ON assets(checksum_sha256);
-CREATE INDEX IF NOT EXISTS idx_assets_device ON assets(user_id, device_asset_id);
-CREATE INDEX IF NOT EXISTS idx_assets_favorited ON assets(user_id, is_favorited);
-
-CREATE TABLE IF NOT EXISTS albums (
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_assets_user_taken ON assets(user_id, taken_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_assets_checksum ON assets(checksum_sha256)`,
+		`CREATE INDEX IF NOT EXISTS idx_assets_device ON assets(user_id, device_asset_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_assets_favorited ON assets(user_id, is_favorited)`,
+		`CREATE TABLE IF NOT EXISTS albums (
 	id             TEXT PRIMARY KEY,
 	user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	name           TEXT NOT NULL,
@@ -110,21 +118,18 @@ CREATE TABLE IF NOT EXISTS albums (
 	cover_asset_id TEXT,
 	created_at     TEXT NOT NULL,
 	updated_at     TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS album_assets (
+)`,
+		`CREATE TABLE IF NOT EXISTS album_assets (
 	album_id   TEXT NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
 	asset_id   TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
 	added_at   TEXT NOT NULL,
 	PRIMARY KEY (album_id, asset_id)
-);
-
-CREATE TABLE IF NOT EXISTS jwt_blocklist (
+)`,
+		`CREATE TABLE IF NOT EXISTS jwt_blocklist (
 	token_id   TEXT PRIMARY KEY,
 	expires_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS background_jobs (
+)`,
+		`CREATE TABLE IF NOT EXISTS background_jobs (
 	id          TEXT PRIMARY KEY,
 	type        TEXT NOT NULL,
 	status      TEXT NOT NULL DEFAULT 'pending',
@@ -132,5 +137,14 @@ CREATE TABLE IF NOT EXISTS background_jobs (
 	started_at  TEXT,
 	finished_at TEXT,
 	created_at  TEXT NOT NULL
-);`,
+)`,
+	},
+
+	// Migration 2: add large (1080 px) and blur (32 px placeholder) thumbnail
+	// columns to support the SSD fast-tier caching strategy for SBC deployments.
+	// SQLite only allows one column per ALTER TABLE statement.
+	{
+		`ALTER TABLE assets ADD COLUMN thumb_large INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE assets ADD COLUMN thumb_blur  INTEGER NOT NULL DEFAULT 0`,
+	},
 }

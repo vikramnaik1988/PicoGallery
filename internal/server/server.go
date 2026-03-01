@@ -26,25 +26,28 @@ const version = "1.0.0"
 
 // Server holds all initialized dependencies.
 type Server struct {
-	cfg      *config.Config
-	db       *sql.DB
-	assetSvc *assets.Service
+	cfg          *config.Config
+	db           *sql.DB
+	assetSvc     *assets.Service
+	originalsRoot string // HDD path — original files
+	storageRoot  string  // SSD root — for disk-space reporting
 }
 
 // New initializes the server and all its subsystems.
 func New(cfg *config.Config) (*Server, error) {
-	// Ensure storage directories exist
-	for _, dir := range []string{
-		cfg.Storage.Root,
-		cfg.Storage.Root + "/originals",
-		cfg.Storage.Root + "/.thumbnails",
-	} {
+	originalsRoot := cfg.Storage.EffectiveOriginalsRoot()
+	thumbRoot := cfg.Storage.EffectiveThumbnailsRoot()
+	tmpRoot := cfg.Storage.EffectiveTmpRoot()
+
+	// Ensure all storage directories exist (NewService also does this, but
+	// fail early here so the error message names the misconfigured path).
+	for _, dir := range []string{originalsRoot, thumbRoot, tmpRoot} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("creating storage dir %s: %w", dir, err)
 		}
 	}
 
-	// Open SQLite
+	// Open SQLite — database lives on SSD for fast metadata queries
 	db, err := sql.Open("sqlite", cfg.Database.Path+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
@@ -61,9 +64,15 @@ func New(cfg *config.Config) (*Server, error) {
 		log.Printf("warning: could not ensure admin user: %v", err)
 	}
 
-	assetSvc := assets.NewService(db, cfg.Storage.Root, cfg.Thumbnails.Workers, cfg.Thumbnails.JpegQuality)
+	assetSvc := assets.NewService(db, originalsRoot, thumbRoot, tmpRoot, cfg.Thumbnails.Workers, cfg.Thumbnails.JpegQuality)
 
-	return &Server{cfg: cfg, db: db, assetSvc: assetSvc}, nil
+	return &Server{
+		cfg:          cfg,
+		db:           db,
+		assetSvc:     assetSvc,
+		originalsRoot: originalsRoot,
+		storageRoot:  cfg.Storage.Root,
+	}, nil
 }
 
 // Router builds and returns the HTTP mux.
@@ -89,9 +98,9 @@ func (s *Server) Router() http.Handler {
 	authH := auth.NewHandler(authSvc, s.db)
 	assetH := assets.NewHandler(s.assetSvc, s.db)
 	albumH := albums.NewHandler(s.db)
-	browserH := browser.NewHandler(s.db, s.cfg.Storage.Root)
+	browserH := browser.NewHandler(s.db, s.originalsRoot)
 	searchH := search.NewHandler(s.db)
-	infoH := NewInfoHandler(s.db, s.cfg.Storage.Root, version, s.assetSvc)
+	infoH := NewInfoHandler(s.db, s.originalsRoot, s.storageRoot, version, s.assetSvc)
 
 	r.Route("/api/v1", func(r chi.Router) {
 

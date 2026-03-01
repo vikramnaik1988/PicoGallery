@@ -16,19 +16,19 @@ import (
 )
 
 type Handler struct {
-	db          *sql.DB
-	storageRoot string
+	db           *sql.DB
+	originalsRoot string
 }
 
-func NewHandler(db *sql.DB, storageRoot string) *Handler {
-	return &Handler{db: db, storageRoot: storageRoot}
+func NewHandler(db *sql.DB, originalsRoot string) *Handler {
+	return &Handler{db: db, originalsRoot: originalsRoot}
 }
 
 // GET /api/v1/files
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	relPath := sanitizePath(r.URL.Query().Get("path"))
-	absPath := filepath.Join(h.storageRoot, "originals", user.ID, relPath)
+	absPath := filepath.Join(h.originalsRoot, user.ID, relPath)
 
 	page := intParam(r.URL.Query().Get("page"), 1)
 	pageSize := intParam(r.URL.Query().Get("page_size"), 100)
@@ -104,7 +104,7 @@ func (h *Handler) CreateDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rel := sanitizePath(req.Path)
-	abs := filepath.Join(h.storageRoot, "originals", user.ID, rel)
+	abs := filepath.Join(h.originalsRoot, user.ID, rel)
 	if err := os.MkdirAll(abs, 0755); err != nil {
 		writeError(w, "INTERNAL_ERROR", "Failed to create directory.", http.StatusInternalServerError)
 		return
@@ -125,7 +125,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rel := sanitizePath(req.Path)
-	abs := filepath.Join(h.storageRoot, "originals", user.ID, rel)
+	abs := filepath.Join(h.originalsRoot, user.ID, rel)
 	if err := os.RemoveAll(abs); err != nil {
 		writeError(w, "INTERNAL_ERROR", "Failed to delete.", http.StatusInternalServerError)
 		return
@@ -148,8 +148,8 @@ func (h *Handler) Move(w http.ResponseWriter, r *http.Request) {
 	}
 	srcRel := sanitizePath(req.SourcePath)
 	dstRel := sanitizePath(req.DestPath)
-	srcAbs := filepath.Join(h.storageRoot, "originals", user.ID, srcRel)
-	dstAbs := filepath.Join(h.storageRoot, "originals", user.ID, dstRel)
+	srcAbs := filepath.Join(h.originalsRoot, user.ID, srcRel)
+	dstAbs := filepath.Join(h.originalsRoot, user.ID, dstRel)
 
 	if err := os.MkdirAll(filepath.Dir(dstAbs), 0755); err != nil {
 		writeError(w, "INTERNAL_ERROR", "Could not create destination directory.", http.StatusInternalServerError)
@@ -169,7 +169,7 @@ func (h *Handler) Move(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	rel := sanitizePath(r.URL.Query().Get("path"))
-	abs := filepath.Join(h.storageRoot, "originals", user.ID, rel)
+	abs := filepath.Join(h.originalsRoot, user.ID, rel)
 
 	info, err := os.Stat(abs)
 	if err != nil {

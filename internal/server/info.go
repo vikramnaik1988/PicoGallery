@@ -13,23 +13,46 @@ import (
 )
 
 type InfoHandler struct {
-	db          *sql.DB
-	storageRoot string
-	version     string
-	assetSvc    *assets.Service
+	db           *sql.DB
+	originalsRoot string // HDD root — walked during rescan
+	storageRoot  string  // SSD root — used for disk-space stats
+	version      string
+	assetSvc     *assets.Service
 }
 
-func NewInfoHandler(db *sql.DB, storageRoot, version string, svc *assets.Service) *InfoHandler {
-	return &InfoHandler{db: db, storageRoot: storageRoot, version: version, assetSvc: svc}
+func NewInfoHandler(db *sql.DB, originalsRoot, storageRoot, version string, svc *assets.Service) *InfoHandler {
+	return &InfoHandler{
+		db:           db,
+		originalsRoot: originalsRoot,
+		storageRoot:  storageRoot,
+		version:      version,
+		assetSvc:     svc,
+	}
 }
 
 // GET /api/v1/server/info
 func (h *InfoHandler) Info(w http.ResponseWriter, r *http.Request) {
-	var total, free uint64
-	if stat, err := diskUsage(h.storageRoot); err == nil {
-		total = stat.Total
-		free = stat.Free
+	// Primary storage metric: the HDD that holds originals
+	var hddTotal, hddFree uint64
+	if stat, err := diskUsage(h.originalsRoot); err == nil {
+		hddTotal = stat.Total
+		hddFree = stat.Free
 	}
+
+	storageInfo := map[string]interface{}{
+		"total_bytes": hddTotal,
+		"used_bytes":  hddTotal - hddFree,
+		"free_bytes":  hddFree,
+	}
+
+	// Report fast-tier (SSD) separately when it is a different mount point
+	if h.storageRoot != h.originalsRoot {
+		if stat, err := diskUsage(h.storageRoot); err == nil {
+			storageInfo["fast_tier_total_bytes"] = stat.Total
+			storageInfo["fast_tier_free_bytes"] = stat.Free
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"server_name": "PicoGallery",
 		"version":     h.version,
@@ -41,11 +64,7 @@ func (h *InfoHandler) Info(w http.ResponseWriter, r *http.Request) {
 			"partner_sharing":  false,
 			"public_links":     false,
 		},
-		"storage": map[string]interface{}{
-			"total_bytes": total,
-			"used_bytes":  total - free,
-			"free_bytes":  free,
-		},
+		"storage": storageInfo,
 	})
 }
 
@@ -99,26 +118,23 @@ func (h *InfoHandler) runRescan(jobID string) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, _ = h.db.Exec(`UPDATE background_jobs SET started_at=? WHERE id=?`, now, jobID)
 
-	// Find all user directories under originals/
-	originalsRoot := h.storageRoot + "/originals"
-	scanned, newFiles := 0, 0
+	scanned, newFiles, rethumb := 0, 0, 0
 
-	// Walk the storage tree. For files that don't have a DB record, ingest them.
-	_ = walkDir(originalsRoot, func(path string) {
+	// Step 1: ingest files on disk that have no DB record.
+	// originalsRoot layout: {originalsRoot}/{userID}/{YYYY}/{MM}/{file}
+	_ = walkDir(h.originalsRoot, func(path string) {
 		scanned++
 		var count int
 		_ = h.db.QueryRow(`SELECT COUNT(*) FROM assets WHERE original_path=?`, path).Scan(&count)
 		if count > 0 {
 			return
 		}
-		// Try to determine user from path (originals/<userID>/...)
-		rel := path[len(originalsRoot)+1:]
+		rel := path[len(h.originalsRoot)+1:]
 		parts := splitPath(rel)
 		if len(parts) < 1 {
 			return
 		}
 		userID := parts[0]
-		// Verify user exists
 		var uCount int
 		_ = h.db.QueryRow(`SELECT COUNT(*) FROM users WHERE id=?`, userID).Scan(&uCount)
 		if uCount == 0 {
@@ -136,8 +152,25 @@ func (h *InfoHandler) runRescan(jobID string) {
 		newFiles++
 	})
 
+	// Step 2: re-enqueue thumbnail jobs for assets that are missing the new
+	// large or blur tiers (e.g. after upgrading from a pre-split-storage build).
+	rows, err := h.db.Query(
+		`SELECT id, original_path, media_type FROM assets WHERE thumb_large=0 OR thumb_blur=0`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id, path, mt string
+			if rows.Scan(&id, &path, &mt) == nil {
+				h.assetSvc.EnqueueThumbnail(id, path, mt)
+				rethumb++
+			}
+		}
+	}
+
 	done := time.Now().UTC().Format(time.RFC3339)
-	progress, _ := json.Marshal(map[string]int{"scanned": scanned, "new": newFiles, "errors": 0})
+	progress, _ := json.Marshal(map[string]int{
+		"scanned": scanned, "new": newFiles, "rethumb": rethumb, "errors": 0,
+	})
 	_, _ = h.db.Exec(`UPDATE background_jobs SET status='done', finished_at=?, progress=? WHERE id=?`,
 		done, string(progress), jobID)
 }

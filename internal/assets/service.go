@@ -1,6 +1,7 @@
 package assets
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -64,26 +65,41 @@ type thumbJob struct {
 
 // Service manages asset operations.
 type Service struct {
-	db          *sql.DB
-	storageRoot string
-	thumbRoot   string
-	thumbQ      chan thumbJob
-	quality     int
-	wg          sync.WaitGroup
+	db           *sql.DB
+	originalsRoot string // HDD — where original files are stored
+	thumbRoot    string  // SSD — where all thumbnail tiers are cached
+	tmpRoot      string  // SSD — upload staging area
+	thumbQ       chan thumbJob
+	quality      int
+	wg           sync.WaitGroup
 }
 
-func NewService(db *sql.DB, storageRoot string, workers, quality int) *Service {
-	thumbRoot := filepath.Join(storageRoot, ".thumbnails")
-	_ = os.MkdirAll(thumbRoot, 0755)
-	_ = os.MkdirAll(filepath.Join(storageRoot, "originals"), 0755)
-	_ = os.MkdirAll(filepath.Join(storageRoot, "tmp"), 0755)
+// NewService creates the asset service with a hybrid split-drive layout.
+//
+//   - originalsRoot: path on the slow HDD for original files
+//   - thumbRoot:     path on the fast SSD for all thumbnail tiers
+//   - tmpRoot:       path on the fast SSD for upload staging
+func NewService(db *sql.DB, originalsRoot, thumbRoot, tmpRoot string, workers, quality int) *Service {
+	for _, dir := range []string{
+		originalsRoot,
+		thumbRoot,
+		tmpRoot,
+		// Pre-create thumbnail sub-directories so workers never block on mkdir
+		filepath.Join(thumbRoot, "small"),
+		filepath.Join(thumbRoot, "preview"),
+		filepath.Join(thumbRoot, "large"),
+		filepath.Join(thumbRoot, "blur"),
+	} {
+		_ = os.MkdirAll(dir, 0755)
+	}
 
 	s := &Service{
-		db:          db,
-		storageRoot: storageRoot,
-		thumbRoot:   thumbRoot,
-		thumbQ:      make(chan thumbJob, 512),
-		quality:     quality,
+		db:           db,
+		originalsRoot: originalsRoot,
+		thumbRoot:    thumbRoot,
+		tmpRoot:      tmpRoot,
+		thumbQ:       make(chan thumbJob, 512),
+		quality:      quality,
 	}
 	for i := 0; i < workers; i++ {
 		s.wg.Add(1)
@@ -104,7 +120,10 @@ func (s *Service) thumbWorker() {
 			log.Printf("thumbnail error for %s: %v", job.assetID, err)
 			continue
 		}
-		_, _ = s.db.Exec(`UPDATE assets SET thumb_small=1, thumb_preview=1 WHERE id=?`, job.assetID)
+		_, _ = s.db.Exec(
+			`UPDATE assets SET thumb_small=1, thumb_preview=1, thumb_large=1, thumb_blur=1 WHERE id=?`,
+			job.assetID,
+		)
 	}
 }
 
@@ -123,26 +142,26 @@ func (s *Service) EnqueueThumbnail(assetID, originalPath, mediaType string) {
 }
 
 // SaveAsset saves an uploaded file and its metadata to the database.
+// The original is written to originalsRoot (HDD), staging uses tmpRoot (SSD).
 func (s *Service) SaveAsset(userID, filename, mediaType string, r io.Reader, deviceAssetID, deviceID string, takenAtOverride *time.Time) (*Asset, bool, error) {
-	// Write to a named temp file in our tmp dir (avoids Windows open-file-delete issues)
-	tmpDir := filepath.Join(s.storageRoot, "tmp")
-	tmpFile, err := os.CreateTemp(tmpDir, "upload_*")
+	// Stage to SSD tmp dir — fast write, avoids touching the HDD until we know the file is good
+	tmpFile, err := os.CreateTemp(s.tmpRoot, "upload_*")
 	if err != nil {
 		return nil, false, fmt.Errorf("creating temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
 
-	// Stream + hash
+	// Stream + hash simultaneously
 	h := sha256.New()
 	written, err := io.Copy(io.MultiWriter(tmpFile, h), r)
-	tmpFile.Close() // close before any rename/delete on Windows
+	tmpFile.Close() // close before rename/delete on Windows
 	if err != nil {
 		_ = os.Remove(tmpPath)
 		return nil, false, fmt.Errorf("streaming upload: %w", err)
 	}
 	checksum := hex.EncodeToString(h.Sum(nil))
 
-	// Deduplicate
+	// Deduplicate by checksum
 	var existingID string
 	err = s.db.QueryRow(`SELECT id FROM assets WHERE user_id=? AND checksum_sha256=?`, userID, checksum).Scan(&existingID)
 	if err == nil {
@@ -154,10 +173,10 @@ func (s *Service) SaveAsset(userID, filename, mediaType string, r io.Reader, dev
 		return nil, false, err
 	}
 
-	// Determine final storage path
+	// Determine final path on HDD: {originalsRoot}/{userID}/{YYYY}/{MM}/{assetID}.ext
 	id := "ast_" + uuid.NewString()
 	now := time.Now().UTC()
-	dir := filepath.Join(s.storageRoot, "originals", userID, now.Format("2006"), now.Format("01"))
+	dir := filepath.Join(s.originalsRoot, userID, now.Format("2006"), now.Format("01"))
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		_ = os.Remove(tmpPath)
 		return nil, false, fmt.Errorf("mkdir: %w", err)
@@ -172,7 +191,7 @@ func (s *Service) SaveAsset(userID, filename, mediaType string, r io.Reader, dev
 	}
 	finalPath := filepath.Join(dir, id+ext)
 
-	// Move temp → final (os.Rename works cross-drive on Windows via copy+delete)
+	// Move SSD tmp → HDD final (handles cross-device via copy+delete fallback)
 	if err := moveFile(tmpPath, finalPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return nil, false, fmt.Errorf("moving file: %w", err)
@@ -181,18 +200,16 @@ func (s *Service) SaveAsset(userID, filename, mediaType string, r io.Reader, dev
 	// Extract EXIF and dimensions
 	exifData, width, height := extractEXIF(finalPath)
 
-	// Determine taken_at: override → EXIF datetime → file mod time → now
+	// Determine taken_at: override → EXIF datetime → now
 	var takenAtStr *string
 	if takenAtOverride != nil {
 		s2 := takenAtOverride.UTC().Format(time.RFC3339)
 		takenAtStr = &s2
 	} else {
-		// Try EXIF DateTime
 		if t := extractEXIFDateTime(finalPath); t != nil {
 			s2 := t.UTC().Format(time.RFC3339)
 			takenAtStr = &s2
 		} else {
-			// Fall back to now
 			s2 := now.Format(time.RFC3339)
 			takenAtStr = &s2
 		}
@@ -260,36 +277,59 @@ func moveFile(src, dst string) error {
 	return nil
 }
 
+// thumbSpec defines a thumbnail tier.
+type thumbSpec struct {
+	name    string // folder name under thumbRoot
+	maxSide int    // max dimension in pixels
+	square  bool   // true = center-crop to square; false = fit aspect ratio
+	quality int    // JPEG quality override; 0 = use job.quality
+}
+
+// thumbnailTiers are all four SSD-cached thumbnail sizes.
+var thumbnailTiers = []thumbSpec{
+	// blur: tiny 32×32 JPEG placeholder for progressive loading.
+	// Clients display it stretched + CSS blur(20px) while the real image loads.
+	{name: "blur", maxSide: 32, square: true, quality: 40},
+	// small: 256×256 square grid thumbnail.
+	{name: "small", maxSide: 256, square: true, quality: 0},
+	// preview: 720 px longest-side fit for the detail/swipe view.
+	{name: "preview", maxSide: 720, square: false, quality: 0},
+	// large: 1080 px longest-side fit for full-screen on Retina/high-DPI phones.
+	{name: "large", maxSide: 1080, square: false, quality: 0},
+}
+
 func generateThumbnails(job thumbJob) error {
 	if !strings.HasPrefix(job.mediaType, "image/") {
 		return nil // non-image files have no thumbnail
 	}
 
-	f, err := os.Open(job.originalPath)
-	if err != nil {
-		return err
+	var img image.Image
+	if isHEICType(job.mediaType) {
+		var err error
+		img, err = decodeHEIC(job.originalPath)
+		if err != nil {
+			return fmt.Errorf("HEIC: %w", err)
+		}
+	} else {
+		f, err := os.Open(job.originalPath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		img, _, err = image.Decode(f)
+		if err != nil {
+			return fmt.Errorf("decode: %w", err)
+		}
 	}
-	defer f.Close()
 
-	img, _, err := image.Decode(f)
-	if err != nil {
-		return fmt.Errorf("decode: %w", err)
-	}
-
-	for _, spec := range []struct {
-		name    string
-		maxSide int
-		square  bool
-	}{
-		{"small", 256, true},
-		{"preview", 720, false},
-	} {
+	for _, spec := range thumbnailTiers {
 		var dst image.Image
 		if spec.square {
 			dst = cropSquare(img, spec.maxSide)
 		} else {
 			dst = resizeFit(img, spec.maxSide)
 		}
+
 		dir := filepath.Join(job.thumbRoot, spec.name, job.assetID[:2])
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return err
@@ -298,7 +338,12 @@ func generateThumbnails(job thumbJob) error {
 		if err != nil {
 			return err
 		}
-		err = jpeg.Encode(out, dst, &jpeg.Options{Quality: job.quality})
+
+		q := spec.quality
+		if q == 0 {
+			q = job.quality
+		}
+		err = jpeg.Encode(out, dst, &jpeg.Options{Quality: q})
 		out.Close()
 		if err != nil {
 			return err
@@ -344,31 +389,27 @@ func resizeFit(img image.Image, maxSide int) image.Image {
 }
 
 type rawEXIF struct {
-	make_, model            string
-	lat, lng                float64
-	focal, aperture         float64
-	iso                     int
-	shutter                 string
-	hasMake, hasModel       bool
-	hasGPS                  bool
-	hasFocal, hasAperture   bool
-	hasISO, hasShutter      bool
+	make_, model          string
+	lat, lng              float64
+	focal, aperture       float64
+	iso                   int
+	shutter               string
+	hasMake, hasModel     bool
+	hasGPS                bool
+	hasFocal, hasAperture bool
+	hasISO, hasShutter    bool
 }
 
-func extractEXIF(path string) (*rawEXIF, *int, *int) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, nil, nil
-	}
-	defer f.Close()
-
+// extractEXIFFromReader reads EXIF metadata and pixel dimensions from rs.
+// rs must be seekable (supports io.SeekStart) so it can be read twice.
+func extractEXIFFromReader(rs io.ReadSeeker) (*rawEXIF, *int, *int) {
 	var w, h int
-	if cfg, _, err2 := image.DecodeConfig(f); err2 == nil {
+	if cfg, _, err := image.DecodeConfig(rs); err == nil {
 		w, h = cfg.Width, cfg.Height
 	}
-	_, _ = f.Seek(0, io.SeekStart)
+	_, _ = rs.Seek(0, io.SeekStart)
 
-	x, err := exif.Decode(f)
+	x, err := exif.Decode(rs)
 	if err != nil {
 		if w > 0 {
 			return nil, &w, &h
@@ -418,13 +459,44 @@ func extractEXIF(path string) (*rawEXIF, *int, *int) {
 	return r, nil, nil
 }
 
-func extractEXIFDateTime(path string) *time.Time {
+// extractEXIF extracts EXIF metadata and pixel dimensions from the file at path.
+// For HEIC/HEIF files it first converts to JPEG via an external tool (ImageMagick
+// or heif-convert) so that goexif can parse the embedded EXIF data.
+func extractEXIF(path string) (*rawEXIF, *int, *int) {
+	if isHEICPath(path) {
+		data := heicToJPEGBytes(path)
+		if data == nil {
+			return nil, nil, nil
+		}
+		return extractEXIFFromReader(bytes.NewReader(data))
+	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil
+		return nil, nil, nil
 	}
 	defer f.Close()
-	x, err := exif.Decode(f)
+	return extractEXIFFromReader(f)
+}
+
+// extractEXIFDateTime returns the capture time embedded in a file's EXIF.
+// For HEIC/HEIF the file is converted to JPEG first so goexif can read it.
+func extractEXIFDateTime(path string) *time.Time {
+	var rs io.ReadSeeker
+	if isHEICPath(path) {
+		data := heicToJPEGBytes(path)
+		if data == nil {
+			return nil
+		}
+		rs = bytes.NewReader(data)
+	} else {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+		rs = f
+	}
+	x, err := exif.Decode(rs)
 	if err != nil {
 		return nil
 	}

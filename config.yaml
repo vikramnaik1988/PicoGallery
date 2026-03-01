@@ -4,15 +4,46 @@ server:
   tls_cert: ""    # e.g. /etc/ssl/certs/picogallery.crt
   tls_key: ""     # e.g. /etc/ssl/private/picogallery.key
 
+# ─── Hybrid Split-Drive Layout (Radxa Cubie A7S / Raspberry Pi) ───────────────
+#
+#  128 GB USB SSD  →  OS + database + all thumbnails (fast random I/O)
+#  1 TB HDD        →  original photos/videos only  (sequential I/O, ~120 MB/s)
+#
+#  Mount example (Linux):
+#    SSD  →  /mnt/ssd   (ext4, noatime)
+#    HDD  →  /mnt/hdd   (ext4, noatime)
+#
+#  Uncomment and set the three split paths below, then leave `root` as the
+#  fallback for any remaining temp files that don't fit either tier.
+#
+#  Single-drive / desktop mode: leave originals_root / thumbnails_root /
+#  tmp_root empty and only set `root` — everything stays under root/.
+# ──────────────────────────────────────────────────────────────────────────────
+
 storage:
-  root: "./data/storage"
+  root: "./data/storage"             # fallback / single-drive mode
+
+  # Uncomment for split-drive SBC deployment:
+  # originals_root:  "/mnt/hdd/gallery"          # HDD  — originals only
+  # thumbnails_root: "/mnt/ssd/gallery/thumbs"   # SSD  — small/preview/large/blur
+  # tmp_root:        "/mnt/ssd/gallery/tmp"       # SSD  — upload staging
 
 database:
+  # Point to SSD for fast metadata queries (gallery scroll, search, sync)
   path: "./data/picogallery.db"
+  # SBC example: path: "/mnt/ssd/gallery/picogallery.db"
 
 thumbnails:
-  workers: 2          # Keep ≤ 2 on SBCs to avoid CPU saturation
+  # Radxa A7S has 8 cores — 4 workers saturates 4 cores while leaving headroom
+  # for serving HTTP. Drop to 2 on quad-core boards (Pi 4, Orange Pi 3).
+  workers: 4
   jpeg_quality: 85
+
+  # Thumbnail tiers generated per image (all stored on SSD):
+  #   blur    →  32×32  JPEG q40  — blur-hash placeholder (~0.5 KB)
+  #   small   → 256×256 square   — grid thumbnails
+  #   preview → 720px  fit       — detail / swipe view
+  #   large   → 1080px fit       — full-screen on Retina / high-DPI phones
 
 auth:
   jwt_secret: "change-this-to-a-long-random-string-in-production"
@@ -22,3 +53,9 @@ upload:
   max_file_size_mb: 500
   allowed_video: true
   allowed_raw: false   # Set true if libraw-bin is installed on PATH
+
+  # HEIC/HEIF (iPhone default format): always accepted for upload.
+  # Thumbnails + EXIF are extracted automatically if either tool is on PATH:
+  #   apt install imagemagick       (recommended — handles most formats)
+  #   apt install libheif-examples  (lighter, HEIC-only)
+  # Without a converter, HEIC originals are stored but show no thumbnail.
