@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # ---- Runtime stage ----
 FROM alpine:3.19
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata imagemagick
 
 WORKDIR /app
 COPY --from=builder /app/picogallery .
