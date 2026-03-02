@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -210,14 +209,12 @@ func (h *Handler) ServeThumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	thumbPath := filepath.Join(h.svc.thumbRoot, size, id[:2], id+".jpg")
-	log.Printf("[thumb] path=%s", thumbPath)
-	if statErr := func() error { _, e := os.Stat(thumbPath); return e }(); os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(thumbPath); os.IsNotExist(statErr) {
 		// Thumb not ready — serve original scaled on-the-fly.
 		// Never cache this response: thumbnail may be generated shortly after.
 		w.Header().Set("Cache-Control", "no-store")
 		var origPath, mediaType string
 		_ = h.db.QueryRow(`SELECT original_path, media_type FROM assets WHERE id=?`, id).Scan(&origPath, &mediaType)
-		log.Printf("[thumb] fallback: origPath=%s mediaType=%s isHEICType=%v isHEICPath=%v", origPath, mediaType, isHEICType(mediaType), isHEICPath(origPath))
 		if origPath == "" {
 			writeError(w, "ASSET_NOT_FOUND", "Thumbnail not available.", http.StatusNotFound)
 			return
@@ -238,8 +235,6 @@ func (h *Handler) ServeThumbnail(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/jpeg")
 		http.ServeFile(w, r, origPath)
 		return
-	} else {
-		log.Printf("[thumb] stat result: err=%v (IsNotExist=%v)", statErr, os.IsNotExist(statErr))
 	}
 
 	data, err := os.ReadFile(thumbPath)

@@ -1740,6 +1740,7 @@ function showLbItem() {
     <button class="btn btn-ghost" onclick="toggleFavorite('${a.id}', ${a.is_favorited})">
       ${a.is_favorited ? '💛 Unfavorite' : '🤍 Favorite'}
     </button>
+    <button class="btn btn-ghost" onclick="addSingleToAlbum('${a.id}')">+ Album</button>
     <button class="btn btn-danger" onclick="deleteAsset('${a.id}')">Delete</button>
   `;
 }
@@ -1791,11 +1792,16 @@ async function renderAlbums() {
 async function openAlbum(id) {
   const album = State.albums.find(a => a.id === id);
   if (!album) return;
+  State.currentAlbumId = id;
   const data = await api('GET', `/albums/${id}?page_size=200`);
   if (!data) return;
 
   setTopbarActions(`
     <button class="btn btn-ghost" onclick="renderAlbums(); navigate('albums')">← Back</button>
+    <button class="btn btn-primary" onclick="addPhotosToAlbum('${id}')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Add Photos
+    </button>
     <button class="btn btn-danger" onclick="deleteAlbum('${id}')">Delete Album</button>
   `);
   document.getElementById('topbar-title').textContent = album.name;
@@ -1804,7 +1810,7 @@ async function openAlbum(id) {
   // Fetch each asset to display
   const container = document.getElementById('albums-container');
   if (!data.asset_ids || data.asset_ids.length === 0) {
-    container.innerHTML = emptyState(iconBox(), 'Album is empty', 'Upload photos and add them to this album');
+    container.innerHTML = emptyState(iconBox(), 'Album is empty', 'Add photos to this album using the button above');
     return;
   }
   // Load assets
@@ -1818,6 +1824,55 @@ async function openAlbum(id) {
   html += '</div>';
   container.innerHTML = html;
   container.querySelectorAll('img[data-src]').forEach(img => imgObserver.observe(img));
+}
+
+async function addPhotosToAlbum(albumId) {
+  // Fetch all assets and current album membership in parallel
+  const [allData, albumData] = await Promise.all([
+    api('GET', '/assets?page_size=500&order=desc'),
+    api('GET', `/albums/${albumId}?page_size=500`),
+  ]);
+  if (!allData || !albumData) return;
+
+  const inAlbum = new Set(albumData.asset_ids || []);
+  const available = (allData.assets || []).filter(a => !inAlbum.has(a.id) && a.media_type?.startsWith('image'));
+  if (available.length === 0) return toast('All photos are already in this album', 'info');
+
+  const thumbUrl = id => `${State.serverUrl}/api/v1/assets/${id}/thumbnail?size=small&token=${encodeURIComponent(State.token)}`;
+  const selected = new Set();
+
+  let grid = `<div style="max-height:55vh;overflow-y:auto;"><div class="photo-grid" style="gap:5px;padding:2px;">`;
+  available.forEach(a => {
+    grid += `<div id="pick-${a.id}" style="position:relative;cursor:pointer;border-radius:6px;overflow:hidden;border:3px solid transparent" onclick="togglePickAsset('${a.id}')">
+      <img src="${thumbUrl(a.id)}" style="width:100%;aspect-ratio:1;object-fit:cover;display:block" loading="lazy" />
+    </div>`;
+  });
+  grid += `</div></div>`;
+
+  // expose toggle on window so inline onclick can reach it
+  window._pickSelected = selected;
+  window.togglePickAsset = (id) => {
+    const el = document.getElementById('pick-' + id);
+    if (!el) return;
+    if (selected.has(id)) {
+      selected.delete(id);
+      el.style.borderColor = 'transparent';
+    } else {
+      selected.add(id);
+      el.style.borderColor = 'var(--accent)';
+    }
+  };
+
+  showModal('Add Photos', `Select photos to add to this album (${available.length} available).`, grid, [
+    { label: 'Cancel', cls: 'btn btn-ghost', action: closeModal },
+    { label: 'Add Selected', cls: 'btn btn-primary', action: async () => {
+      if (selected.size === 0) return toast('Select at least one photo', 'info');
+      await api('POST', `/albums/${albumId}/assets`, { asset_ids: Array.from(selected) });
+      closeModal();
+      toast(`Added ${selected.size} photo${selected.size > 1 ? 's' : ''} to album`, 'success');
+      openAlbum(albumId);
+    }},
+  ]);
 }
 
 function createAlbumModal() {
@@ -2286,6 +2341,29 @@ async function bulkFavorite() {
   toast(`${State.selectedIDs.size} items favorited`, 'success');
   clearSelection();
   renderGallery();
+}
+
+async function addSingleToAlbum(assetId) {
+  const data = await api('GET', '/albums');
+  if (!data) return;
+  const albums = data.albums || [];
+  if (albums.length === 0) return toast('Create an album first', 'info');
+
+  let opts = albums.map(a => `<option value="${a.id}">${escHtml(a.name)}</option>`).join('');
+  showModal('Add to Album', '', `
+    <div class="form-group">
+      <label class="form-label">Album</label>
+      <select class="form-input" id="m-single-album-sel">${opts}</select>
+    </div>
+  `, [
+    { label: 'Cancel', cls: 'btn btn-ghost', action: closeModal },
+    { label: 'Add', cls: 'btn btn-primary', action: async () => {
+      const albumId = document.getElementById('m-single-album-sel').value;
+      await api('POST', `/albums/${albumId}/assets`, { asset_ids: [assetId] });
+      closeModal();
+      toast('Added to album', 'success');
+    }},
+  ]);
 }
 
 async function bulkAlbum() {
