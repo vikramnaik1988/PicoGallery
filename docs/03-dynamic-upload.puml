@@ -1,0 +1,97 @@
+@startuml PicoGallery – Dynamic: Photo Upload Flow
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam sequenceArrowColor #555555
+skinparam sequenceLifeLineBorderColor #888888
+skinparam sequenceGroupBackgroundColor #F3E5F5
+skinparam sequenceGroupBorderColor #9C27B0
+skinparam defaultFontName "Helvetica"
+
+title PicoGallery — Photo Upload (Dynamic View)
+
+participant "Client\n(Browser / Mobile)" as C
+participant "chi Router\n+ Auth Middleware" as R
+participant "AssetHandler\nUpload()" as AH
+participant "AssetService\nSaveAsset()" as AS
+participant "SSD tmp" as TMP
+participant "SQLite DB" as DB
+participant "HDD originals" as HDD
+participant "Thumb Worker\n(goroutine pool)" as TW
+participant "SSD thumbnails" as TS
+participant "ImageMagick\n(optional)" as IM
+
+C -> R : POST /api/v1/assets/upload\nAuthorization: Bearer <jwt>\nContent-Type: multipart/form-data\n[file + metadata]
+
+R -> R : ValidateToken() → inject user into context
+R -> AH : ServeHTTP()
+
+AH -> AH : ParseMultipartForm\ndetect mediaType from filename
+AH -> AS : SaveAsset(userID, filename,\nmediaType, reader, deviceAssetID, takenAt)
+
+group Stage to SSD  (fast write)
+  AS -> TMP : os.CreateTemp("upload_*.tmp")\nstream body + compute SHA-256 simultaneously
+  TMP --> AS : tmp file written, hash ready
+end
+
+group Deduplicate by checksum
+  AS -> DB : SELECT id FROM assets\nWHERE user_id=? AND checksum_sha256=?
+  alt duplicate found
+    DB --> AS : existing asset ID
+    AS --> AH : (asset, isDup=true)
+    AH --> C  : 200 { status:"duplicate", id }
+  else new asset
+    DB --> AS : no rows → continue
+  end
+end
+
+group Persist to HDD
+  AS -> AS : generate asset ID (uuid)\nbuild path: originals/{userID}/{YYYY}/{MM}/{id}.ext\nos.MkdirAll(year/month dirs)
+  AS -> HDD : os.Rename(tmp → originals)\n[fast if same device]\nor copy+delete [cross-device fallback]
+end
+
+group Extract Metadata
+  alt HEIC / HEIF file
+    AS -> IM : magick input.heic jpeg:-
+    IM --> AS : JPEG bytes
+    AS -> AS : goexif.Decode(jpeg bytes)\n→ make/model/GPS/focal/aperture/ISO/shutter/taken_at
+  else JPEG / PNG / WEBP
+    AS -> AS : goexif.Decode(reader) directly
+  end
+  AS -> AS : detect image dimensions (width, height)
+end
+
+group Write DB record
+  AS -> DB : INSERT INTO assets\n(id, user_id, filename, original_path, media_type,\nfile_size_bytes, width, height, taken_at,\nchecksum_sha256, exif_*, created_at)
+  DB --> AS : ok
+end
+
+AS --> AH : (asset, isDup=false)
+AH --> C  : 201 { status:"created", id, ... }
+
+note right of C
+  Client receives asset ID
+  immediately — no waiting
+  for thumbnails
+end note
+
+group Async Thumbnail Generation  (non-blocking channel send)
+  AS -> TW : thumbQ <- thumbJob{id, path, mediaType}\n[returns immediately; drops if queue full (cap 512)]
+
+  TW -> TW : dequeue job
+
+  alt HEIC input
+    TW -> IM  : magick input.heic[0] -auto-orient jpeg:-
+    IM --> TW : JPEG bytes → image.Image
+  else regular image
+    TW -> TW  : os.Open → jpeg/png/webp.Decode()
+  end
+
+  loop for each tier: blur → small → preview → large
+    TW -> TW : imaging.Resize() / Thumbnail()\n(Catmull-Rom resampling)
+    TW -> TS : jpeg.Encode → {size}/{id[:2]}/{id}.jpg
+  end
+
+  TW -> DB : UPDATE assets\nSET thumb_small=1, thumb_preview=1,\nthumb_large=1, thumb_blur=1\nWHERE id=?
+end
+
+@enduml

@@ -147,4 +147,10 @@ var all = [][]string{
 		`ALTER TABLE assets ADD COLUMN thumb_large INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE assets ADD COLUMN thumb_blur  INTEGER NOT NULL DEFAULT 0`,
 	},
+
+	// Migration 3: indices for common query patterns in the List handler.
+	{
+		`CREATE INDEX IF NOT EXISTS idx_assets_user_archived ON assets(user_id, is_archived)`,
+		`CREATE INDEX IF NOT EXISTS idx_assets_user_media    ON assets(user_id, media_type)`,
+	},
 }

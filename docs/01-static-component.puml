@@ -1,0 +1,125 @@
+@startuml PicoGallery – Static Component View
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam componentStyle rectangle
+skinparam defaultFontName "Helvetica"
+skinparam packageBackgroundColor #F0F4FF
+skinparam componentBackgroundColor #FFFFFF
+skinparam ArrowColor #555555
+skinparam NoteBorderColor #AAAAAA
+skinparam NoteBackgroundColor #FFFDE7
+
+title PicoGallery — Static Component View
+
+actor "Web Browser\n(SPA client)" as Browser
+actor "Mobile Client\n(iOS / Android)" as Mobile
+actor "Cloudflare\nTunnel / Nginx" as CF
+
+package "cmd/server" {
+  component "main.go\n(entry point)" as Main
+}
+
+package "config" {
+  component "config.go\nLoad() + Defaults\n+ Env overrides" as Cfg
+  note right of Cfg
+    config.yaml → then env vars:
+    PICO_JWT_SECRET
+    PICO_STORAGE_ROOT
+    PICO_DB_PATH
+    PICO_ORIGINALS_ROOT
+    PICO_THUMBNAILS_ROOT
+    PICO_TMP_ROOT
+  end note
+}
+
+package "internal/server" {
+  component "server.go\nRouter + Middleware\nstack wiring" as SrvRouter
+  component "info.go\nInfoHandler\n(stats, rescan, jobs)" as InfoH
+  component "disk_unix.go /\ndisk_windows.go\n(disk usage)" as DiskUtil
+  SrvRouter --> InfoH
+  SrvRouter --> DiskUtil
+}
+
+package "internal/auth" {
+  component "auth.go\nJWT issue/validate\nbcrypt · API-key hash\nMiddleware / AdminMiddleware" as AuthSvc
+  component "handlers.go\nLogin · Logout · Refresh\nChangePassword · Me\nListUsers · CreateUser\nListAPIKeys · CreateAPIKey" as AuthH
+  AuthH --> AuthSvc
+}
+
+package "internal/assets" {
+  component "service.go\nSaveAsset()\nEnqueueThumbnail()\nWorker pool (N goroutines)\nEXIF extraction\nChecksum SHA-256\nDeduplication" as AssetSvc
+  component "handlers.go\nUpload · List · Get\nServeOriginal · ServeThumbnail\nUpdate · Delete · BulkDelete\nSyncStatus/Changes/Stream (SSE)" as AssetH
+  component "heic.go\nisHEICType/Path\nheicToJPEGBytes()\ndecodeHEIC()" as HeicSup
+  AssetH --> AssetSvc
+  AssetSvc --> HeicSup
+}
+
+package "internal/albums" {
+  component "handlers.go\nList · Create · Get\nUpdate · Delete\nAddAssets · RemoveAssets" as AlbumH
+}
+
+package "internal/browser" {
+  component "handlers.go\nList · CreateDir\nDelete · Move · Download" as BrowserH
+}
+
+package "internal/search" {
+  component "handlers.go\nFull-text search\n(SQLite LIKE)" as SearchH
+}
+
+package "migrations" {
+  component "migrations.go\nRun() · apply()\nenableWAL()\nMigration 1-3" as Mig
+}
+
+package "Storage Layer" {
+  database "SQLite DB  (SSD)\nusers · assets · albums\nalbum_assets · api_keys\nbackground_jobs · jwt_blocklist" as DB
+  storage "Originals  (HDD)\noriginals/{userID}/{YYYY}/{MM}/{id}.ext" as HDD
+  storage "Thumbnails  (SSD)\nthumbs/{blur|small|preview|large}/{id[:2]}/{id}.jpg" as ThumbSSD
+  storage "Upload Staging  (SSD)\ntmp/upload_*.tmp" as TmpSSD
+}
+
+package "External Tools  (optional)" {
+  component "ImageMagick\nmagick / convert\n(HEIC → JPEG)" as Magick
+  component "libheif\nheif-convert\n(fallback)" as Libheif
+}
+
+package "web/" {
+  component "index.html\n(SPA – go:embed)" as WebSPA
+}
+
+Browser --> CF
+Mobile  --> CF
+CF      --> SrvRouter : HTTPS :3456
+
+Main --> Cfg
+Main --> SrvRouter
+Main --> Mig
+
+SrvRouter --> AuthSvc   : middleware
+SrvRouter --> AuthH
+SrvRouter --> AssetH
+SrvRouter --> AlbumH
+SrvRouter --> BrowserH
+SrvRouter --> SearchH
+SrvRouter --> WebSPA    : GET /*
+
+AuthH    --> DB
+AuthSvc  --> DB
+AssetH   --> DB
+AssetSvc --> DB
+AlbumH   --> DB
+BrowserH --> DB
+SearchH  --> DB
+InfoH    --> DB
+Mig      --> DB
+
+AssetSvc --> HDD      : move original
+AssetSvc --> TmpSSD   : stage upload
+AssetSvc --> ThumbSSD : write thumbnails
+AssetH   --> ThumbSSD : serve thumbnails
+AssetH   --> HDD      : serve original
+BrowserH --> HDD      : list / download
+
+HeicSup --> Magick   : exec
+HeicSup --> Libheif  : exec fallback
+
+@enduml

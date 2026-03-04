@@ -1,0 +1,95 @@
+@startuml PicoGallery – Dynamic: Gallery Browse & Thumbnail Serving
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam sequenceArrowColor #555555
+skinparam sequenceGroupBackgroundColor #E8F5E9
+skinparam sequenceGroupBorderColor #388E3C
+skinparam defaultFontName "Helvetica"
+
+title PicoGallery — Gallery Browse & Thumbnail Serving (Dynamic View)
+
+participant "Browser SPA" as B
+participant "chi Router\n+ Auth MW" as R
+participant "AssetHandler\nList()" as AL
+participant "AssetHandler\nServeThumbnail()" as AT
+participant "SQLite DB" as DB
+participant "SSD thumbnails" as TS
+participant "HDD originals" as HDD
+participant "ImageMagick" as IM
+
+group Gallery Load  (2 DB queries total)
+  B -> R  : GET /api/v1/assets?page_size=60&order=desc\nAuthorization: Bearer <jwt>
+  R -> R  : ValidateToken() + userFromDB()
+  R -> AL : ServeHTTP()
+
+  AL -> DB : SELECT COUNT(*) FROM assets\nWHERE user_id=? AND is_archived=0\n[index: idx_assets_user_archived]
+  DB --> AL : total = 47
+
+  AL -> DB : SELECT id,filename,media_type,...(20 cols)\nFROM assets WHERE user_id=? AND is_archived=0\nORDER BY taken_at DESC LIMIT 60 OFFSET 0\n[index: idx_assets_user_taken]
+  DB --> AL : 60 rows  (single round-trip)
+
+  AL --> B : 200 { total:47, page:1, assets:[60 items] }
+end
+
+group Grid Thumbnail  (lazy, IntersectionObserver per visible cell)
+  B -> R  : GET /api/v1/assets/{id}/thumbnail?size=small&token=<jwt>
+  R -> AT : ServeHTTP()
+  AT -> AT : os.Stat(thumbs/small/{id[:2]}/{id}.jpg)
+
+  alt thumbnail on SSD
+    AT -> TS : os.Open → fi.Stat() → ModTime
+    AT --> B  : 200  image/jpeg\nCache-Control: public, max-age=3600\nLast-Modified: <modtime>  [~17 KB]
+
+    note right of B
+      Browser caches.  On re-navigate:
+    end note
+
+    B -> R  : GET …thumbnail?size=small…\nIf-Modified-Since: <modtime>
+    AT --> B  : 304 Not Modified  [0 bytes]
+
+  else no thumbnail yet — HEIC
+    AT -> DB : SELECT original_path, media_type FROM assets WHERE id=?
+    AT -> IM : magick origPath[0] -auto-orient jpeg:-
+    IM --> AT : JPEG bytes
+    AT --> B  : 200 image/jpeg  Cache-Control: no-store  [on-the-fly transcode]
+
+  else no thumbnail yet — video / PDF
+    AT --> B  : 404 Not Found\n[avoids streaming multi-MB original]
+
+  else no thumbnail yet — regular image
+    AT -> HDD : http.ServeFile(origPath)  [fallback while worker generates]
+    AT --> B  : 200  Cache-Control: no-store
+  end
+end
+
+group Lightbox — Regular JPEG
+  B -> B  : showLbItem()  isHEIC=false\nwrap.innerHTML = <img src=previewUrl>
+  B -> R  : GET …/thumbnail?size=preview&token=…
+  AT -> TS : os.Open → Stat
+  AT --> B  : 200 / 304  Cache-Control: public, max-age=3600  [~70 KB]
+  B -> B  : <img> renders instantly from cache on repeat
+end
+
+group Lightbox — HEIC photo
+  B -> B  : showLbItem()  isHEIC=true\ncheck State.blobCache.get(id+':preview')
+
+  alt blob URL already cached  (2nd+ open, same session)
+    B -> B  : img.src = cachedBlobUrl\n[zero network requests]
+  else first open
+    B -> R  : fetch(previewUrl, {cache:'no-store'})
+    AT -> TS : os.Open → http.ServeContent
+    AT --> B  : 200 image/jpeg  Cache-Control: public, max-age=3600
+    B -> B  : URL.createObjectURL(blob)\nState.blobCache.set(id+':preview', blobUrl)\nimg.src = blobUrl
+  end
+end
+
+group Infinite Scroll  (sentinel IntersectionObserver)
+  B -> B  : sentinel div enters viewport\nState.galleryPage++ → 2
+  B -> R  : GET /api/v1/assets?page_size=60&page=2&order=desc
+  AL -> DB : COUNT + SELECT … LIMIT 60 OFFSET 60
+  DB --> AL : next batch (or empty if last page)
+  AL --> B  : 200 { total:47, page:2, assets:[...] }
+  B -> B  : insertAdjacentHTML('beforebegin', newCells)\nobserve new img[data-src] elements
+end
+
+@enduml

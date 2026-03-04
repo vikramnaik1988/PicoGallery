@@ -1,0 +1,92 @@
+@startuml PicoGallery – Dynamic: Auth Flows
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam sequenceArrowColor #555555
+skinparam sequenceGroupBackgroundColor #FFF3E0
+skinparam sequenceGroupBorderColor #E65100
+skinparam defaultFontName "Helvetica"
+
+title PicoGallery — Authentication Flows (Dynamic View)
+
+participant "Client" as C
+participant "chi Router" as R
+participant "AuthHandler" as AH
+participant "AuthService\n(JWT + bcrypt)" as AS
+participant "SQLite DB" as DB
+
+group Login  (password)
+  C -> R  : POST /api/v1/auth/login\n{ email, password }
+  R -> AH : Login()
+  AH -> DB : SELECT id,email,name,password_hash,is_admin\nFROM users WHERE email=?
+  DB --> AH : user row
+
+  AH -> AS : CheckPassword(hash, password)\nbcrypt.CompareHashAndPassword
+
+  alt invalid credentials
+    AH --> C : 401  { error: INVALID_CREDENTIALS }
+  else ok
+    AH -> AS : IssueToken(userID, isAdmin)\njwt.NewWithClaims(HS256)\n{ uid, adm, jti(uuid), exp, iat }
+    AS --> AH : signedJWT, expiresAt
+    AH --> C  : 200  { token, expires_at, user: {...} }
+  end
+end
+
+group JWT Middleware  (every protected request)
+  C -> R  : GET /api/v1/assets\nAuthorization: Bearer <jwt>\n  OR  ?token=<jwt>  (for <img src>)
+  R -> AS : Middleware → extractUser(r)
+  AS -> AS : jwt.ParseWithClaims\nverify HS256 signature + expiry
+
+  alt invalid / expired
+    AS --> C : 401 UNAUTHORIZED
+  else valid
+    AS -> DB : SELECT COUNT(*) FROM jwt_blocklist\nWHERE token_id=<jti>
+    DB --> AS : 0  (not revoked)
+    AS -> DB : SELECT id,email,name,is_admin\nFROM users WHERE id=<uid>
+    DB --> AS : user row
+    AS -> R  : context.WithValue(ctx, user)
+    R -> R   : next.ServeHTTP → handler
+  end
+end
+
+group API Key  (mobile / automation)
+  C -> R  : GET /api/v1/assets\nX-Api-Key: pg_live_<hex>
+  R -> AS : Middleware → userFromAPIKey(raw)
+  AS -> AS : sha256(raw) → hash
+  AS -> DB : SELECT ak.id, ak.user_id FROM api_keys\nWHERE key_hash=?
+  DB --> AS : keyID, userID
+  AS -> DB : UPDATE api_keys SET last_used_at=now()\nWHERE id=?
+  AS -> DB : SELECT id,email,name,is_admin\nFROM users WHERE id=?
+  DB --> AS : user row
+  AS -> R  : context.WithValue(ctx, user)
+end
+
+group Admin Guard  (admin-only routes)
+  R -> R  : AdminMiddleware\nuser := UserFromContext(ctx)
+  alt user.IsAdmin == false
+    R --> C : 403 FORBIDDEN
+  else is admin
+    R -> R  : next.ServeHTTP → admin handler
+  end
+end
+
+group Logout  (token revocation)
+  C -> R  : POST /api/v1/auth/logout\nAuthorization: Bearer <jwt>
+  R -> AH : Logout()
+  AH -> AS : BlockToken(claims.ID, claims.ExpiresAt)
+  AS -> DB : INSERT OR IGNORE INTO jwt_blocklist\n(token_id, expires_at)
+  DB --> AS : ok
+  AH --> C : 200  { message: "logged out" }
+  C -> C  : localStorage.removeItem('pg_token')\nState.blobCache.forEach → revokeObjectURL\nState.blobCache.clear()
+end
+
+group Token Refresh
+  C -> R  : POST /api/v1/auth/refresh\nAuthorization: Bearer <old_jwt>
+  R -> AH : Refresh()
+  AH -> AS : ValidateToken(old) → claims
+  AH -> AS : BlockToken(old.jti)     [revoke old]
+  AH -> AS : IssueToken(userID, isAdmin)  [new token]
+  AS --> AH : newJWT, expiresAt
+  AH --> C  : 200  { token: <new_jwt>, expires_at }
+end
+
+@enduml

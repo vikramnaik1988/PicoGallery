@@ -1310,6 +1310,13 @@ const State = {
   filterType: 'all',
   gridSize: 160,
   searchQ: '',
+  // Blob URL cache for lightbox (avoids re-fetching the same image each open)
+  blobCache: new Map(),  // key: `${assetId}:preview` → blob URL string
+  // Infinite scroll state for gallery
+  galleryPage: 1,
+  galleryHasMore: false,
+  galleryLoading: false,
+  galleryParams: null,
 };
 
 // ──────────────────────────────────────────────────────────
@@ -1408,6 +1415,9 @@ function logout() {
   api('POST', '/auth/logout');
   State.token = '';
   localStorage.removeItem('pg_token');
+  // Free any cached blob URLs to avoid memory leaks after logout
+  State.blobCache.forEach(url => URL.revokeObjectURL(url));
+  State.blobCache.clear();
   document.getElementById('login-screen').classList.add('show');
   document.getElementById('login-error').classList.remove('show');
 }
@@ -1532,54 +1542,83 @@ async function renderGallery() {
     </button>
   `);
 
-  const params = new URLSearchParams({ page_size: 200, order: 'desc' });
-  if (State.filterType !== 'all' && State.filterType !== 'document') params.set('media_type', State.filterType);
-  if (State.searchQ) params.set('q', State.searchQ);
+  // Reset pagination state for fresh render
+  State.galleryPage = 1;
+  State.galleryHasMore = false;
+  State.galleryLoading = false;
+  const baseParams = new URLSearchParams({ page_size: 60, order: 'desc' });
+  if (State.filterType !== 'all' && State.filterType !== 'document') baseParams.set('media_type', State.filterType);
+  if (State.searchQ) baseParams.set('q', State.searchQ);
+  State.galleryParams = baseParams;
 
-  const data = await api('GET', '/assets?' + params);
+  const data = await api('GET', '/assets?' + baseParams);
   if (!data) return;
   let allAssets = data.assets || [];
   if (State.filterType === 'document') allAssets = allAssets.filter(a => isDocMime(a.media_type));
+
   State.assets = allAssets;
   State.assets.forEach(a => State.assetMap[a.id] = a);
-  document.getElementById('badge-photos').textContent = data.total || State.assets.length;
+  document.getElementById('badge-photos').textContent = data.total;
+  document.getElementById('topbar-subtitle').textContent = `${data.total} item${data.total !== 1 ? 's' : ''}`;
 
-  // Group by date
+  const container = document.getElementById('gallery-container');
+  if (State.assets.length === 0) {
+    container.innerHTML = emptyState(iconCamera(), 'No photos yet', 'Upload your first photo to get started');
+    return;
+  }
+
+  State.galleryHasMore = data.total > allAssets.length;
+  container.innerHTML = galleryGroupsHtml(allAssets) +
+    `<div id="gallery-sentinel" style="height:1px"></div>`;
+  container.querySelectorAll('img[data-src]').forEach(img => imgObserver.observe(img));
+  setupGallerySentinel();
+}
+
+function galleryGroupsHtml(assets) {
   const groups = {};
-  State.assets.forEach(a => {
+  assets.forEach(a => {
     const d = a.taken_at ? a.taken_at.substr(0,10) : 'Unknown date';
     if (!groups[d]) groups[d] = [];
     groups[d].push(a);
   });
-
-  const container = document.getElementById('gallery-container');
-  if (State.assets.length === 0) {
-    container.innerHTML = emptyState(
-      iconCamera(),
-      'No photos yet',
-      'Upload your first photo to get started'
-    );
-    return;
-  }
-
   let html = '';
   Object.keys(groups).sort().reverse().forEach(date => {
     html += `<div class="timeline-date">${formatDate(date)}</div>`;
     html += `<div class="photo-grid" style="--min:${State.gridSize}px">`;
-    groups[date].forEach(a => {
-      html += photoCell(a);
-    });
+    groups[date].forEach(a => { html += photoCell(a); });
     html += '</div>';
   });
-  container.innerHTML = html;
+  return html;
+}
 
-  // Lazy load images
-  container.querySelectorAll('img[data-src]').forEach(img => {
-    imgObserver.observe(img);
-  });
-
-  // Set subtitle
-  document.getElementById('topbar-subtitle').textContent = `${data.total} item${data.total !== 1 ? 's' : ''}`;
+function setupGallerySentinel() {
+  const sentinel = document.getElementById('gallery-sentinel');
+  if (!sentinel) return;
+  const sentinelObserver = new IntersectionObserver(async entries => {
+    if (!entries[0].isIntersecting || State.galleryLoading || !State.galleryHasMore) return;
+    State.galleryLoading = true;
+    State.galleryPage++;
+    const params = new URLSearchParams(State.galleryParams);
+    params.set('page', State.galleryPage);
+    const data = await api('GET', '/assets?' + params);
+    State.galleryLoading = false;
+    if (!data) return;
+    let newAssets = data.assets || [];
+    if (State.filterType === 'document') newAssets = newAssets.filter(a => isDocMime(a.media_type));
+    if (newAssets.length === 0) { State.galleryHasMore = false; return; }
+    newAssets.forEach(a => { State.assetMap[a.id] = a; });
+    State.assets = State.assets.concat(newAssets);
+    State.galleryHasMore = State.assets.length < data.total;
+    // Insert new groups before sentinel
+    sentinel.insertAdjacentHTML('beforebegin', galleryGroupsHtml(newAssets));
+    sentinel.previousElementSibling?.querySelectorAll('img[data-src]').forEach(img => imgObserver.observe(img));
+    // Also observe any newly added timeline-date groups
+    document.querySelectorAll('#gallery-container img[data-src]').forEach(img => {
+      if (!img.dataset.observed) { img.dataset.observed = '1'; imgObserver.observe(img); }
+    });
+    if (!State.galleryHasMore) sentinelObserver.disconnect();
+  }, { rootMargin: '300px' });
+  sentinelObserver.observe(sentinel);
 }
 
 function photoCell(a) {
@@ -1675,24 +1714,39 @@ function showLbItem() {
 
   if (a.media_type?.startsWith('image')) {
     const previewUrl = State.serverUrl + '/api/v1/assets/' + a.id + '/thumbnail?size=preview&token=' + encodeURIComponent(State.token);
-    wrap.innerHTML = `<img id="lb-img" src="" alt="" data-original="${origUrl}" />`;
-    // Load via fetch+blob to bypass browser disk cache (avoids stale HEIC→JPEG cached responses)
-    fetch(previewUrl, {cache: 'no-store'})
-      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
-      .then(blob => {
+    const isHEIC = a.media_type === 'image/heic' || a.media_type === 'image/heif';
+    const cacheKey = a.id + ':preview';
+
+    if (isHEIC) {
+      // HEIC: use fetch+blob with cache, bypassing browser disk cache
+      // (browsers can't decode HEIC; server transcodes to JPEG on-the-fly)
+      wrap.innerHTML = `<img id="lb-img" src="" alt="" data-original="${origUrl}" />`;
+      if (State.blobCache.has(cacheKey)) {
         const img = document.getElementById('lb-img');
-        if (!img) return;
-        const blobUrl = URL.createObjectURL(blob);
-        img.onload = () => URL.revokeObjectURL(blobUrl);
-        img.src = blobUrl;
-      })
-      .catch(e => {
-        const img = document.getElementById('lb-img');
-        if (!img) return;
-        img.style.display = 'none';
-        img.parentNode.insertAdjacentHTML('beforeend',
-          `<div style="color:#f66;padding:20px;font-size:13px">⚠ Failed to load image: ${e.message}</div>`);
-      });
+        if (img) img.src = State.blobCache.get(cacheKey);
+      } else {
+        fetch(previewUrl, {cache: 'no-store'})
+          .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+          .then(blob => {
+            const img = document.getElementById('lb-img');
+            if (!img) return;
+            const blobUrl = URL.createObjectURL(blob);
+            State.blobCache.set(cacheKey, blobUrl); // keep for re-use
+            img.src = blobUrl;
+          })
+          .catch(e => {
+            const img = document.getElementById('lb-img');
+            if (!img) return;
+            img.style.display = 'none';
+            img.parentNode.insertAdjacentHTML('beforeend',
+              `<div style="color:#f66;padding:20px;font-size:13px">⚠ Failed to load image: ${e.message}</div>`);
+          });
+      }
+    } else {
+      // Regular images: use a normal <img src> — server sends Cache-Control: public, max-age=3600
+      // so browser handles caching correctly with 304 Not Modified on repeat views.
+      wrap.innerHTML = `<img id="lb-img" src="${previewUrl}" alt="" data-original="${origUrl}" />`;
+    }
   } else if (a.media_type === 'application/pdf') {
     wrap.innerHTML = `<div class="lb-doc-preview"><iframe src="${origUrl}"></iframe></div>`;
   } else if (a.media_type?.startsWith('text/')) {

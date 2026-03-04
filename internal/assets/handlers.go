@@ -123,7 +123,13 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	_ = h.db.QueryRow("SELECT COUNT(*) FROM assets WHERE "+whereClause, countArgs...).Scan(&total)
 
 	offset := (page - 1) * pageSize
-	query := fmt.Sprintf("SELECT id FROM assets WHERE %s ORDER BY taken_at %s, created_at %s LIMIT ? OFFSET ?", whereClause, order, order)
+	query := fmt.Sprintf(`
+		SELECT id,filename,media_type,file_size_bytes,width,height,duration_seconds,
+		       taken_at,created_at,is_favorited,is_archived,checksum_sha256,
+		       exif_make,exif_model,exif_gps_lat,exif_gps_lng,
+		       exif_focal_mm,exif_aperture,exif_iso,exif_shutter
+		FROM assets WHERE %s ORDER BY taken_at %s, created_at %s LIMIT ? OFFSET ?`,
+		whereClause, order, order)
 	args = append(args, pageSize, offset)
 
 	rows, err := h.db.Query(query, args...)
@@ -131,20 +137,41 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INTERNAL_ERROR", "Query failed.", http.StatusInternalServerError)
 		return
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		_ = rows.Scan(&id)
-		ids = append(ids, id)
-	}
-	rows.Close()
+	defer rows.Close()
 
 	assetList := []interface{}{}
-	for _, id := range ids {
-		a := h.fetchAsset(id)
-		if a != nil {
-			assetList = append(assetList, a)
+	for rows.Next() {
+		var a Asset
+		var width, height *int
+		var dur *float64
+		var takenAt *string
+		var exifMake, exifModel, exifShutter *string
+		var exifLat, exifLng, exifFocal, exifAperture *float64
+		var exifISO *int
+		if err := rows.Scan(
+			&a.ID, &a.Filename, &a.MediaType, &a.FileSizeBytes,
+			&width, &height, &dur, &takenAt, &a.CreatedAt,
+			&a.IsFavorited, &a.IsArchived, &a.ChecksumSHA256,
+			&exifMake, &exifModel, &exifLat, &exifLng,
+			&exifFocal, &exifAperture, &exifISO, &exifShutter,
+		); err != nil {
+			continue
 		}
+		a.Width = width
+		a.Height = height
+		a.DurationSeconds = dur
+		a.TakenAt = takenAt
+		a.ThumbnailURL = "/api/v1/assets/" + a.ID + "/thumbnail"
+		a.OriginalURL = "/api/v1/assets/" + a.ID + "/original"
+		if exifMake != nil || exifModel != nil || exifLat != nil {
+			a.EXIF = &EXIFData{
+				Make: exifMake, Model: exifModel,
+				GPSLat: exifLat, GPSLng: exifLng,
+				FocalLengthMM: exifFocal, Aperture: exifAperture,
+				ISO: exifISO, ShutterSpeed: exifShutter,
+			}
+		}
+		assetList = append(assetList, &a)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -210,8 +237,7 @@ func (h *Handler) ServeThumbnail(w http.ResponseWriter, r *http.Request) {
 
 	thumbPath := filepath.Join(h.svc.thumbRoot, size, id[:2], id+".jpg")
 	if _, statErr := os.Stat(thumbPath); os.IsNotExist(statErr) {
-		// Thumb not ready — serve original scaled on-the-fly.
-		// Never cache this response: thumbnail may be generated shortly after.
+		// Thumbnail not generated yet — do not cache; it may appear shortly.
 		w.Header().Set("Cache-Control", "no-store")
 		var origPath, mediaType string
 		_ = h.db.QueryRow(`SELECT original_path, media_type FROM assets WHERE id=?`, id).Scan(&origPath, &mediaType)
@@ -219,7 +245,7 @@ func (h *Handler) ServeThumbnail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, "ASSET_NOT_FOUND", "Thumbnail not available.", http.StatusNotFound)
 			return
 		}
-		// HEIC/HEIF: browsers can't render natively — transcode to JPEG on-the-fly
+		// HEIC/HEIF: transcode to JPEG on-the-fly (browsers can't render natively)
 		if isHEICType(mediaType) || isHEICPath(origPath) {
 			data := heicToJPEGBytes(origPath)
 			if data == nil {
@@ -232,21 +258,34 @@ func (h *Handler) ServeThumbnail(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write(data)
 			return
 		}
+		// Videos, PDFs, etc. have no thumbnail yet — return 404 rather than
+		// streaming the full multi-MB original file as a broken image.
+		if !strings.HasPrefix(mediaType, "image/") {
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "image/jpeg")
 		http.ServeFile(w, r, origPath)
 		return
 	}
 
-	data, err := os.ReadFile(thumbPath)
+	// Thumbnail exists on disk — serve with caching.
+	// Thumbnails are immutable content (same ID → same pixels), so we allow
+	// the browser to cache for 1 hour and rely on ETags for freshness.
+	f, err := os.Open(thumbPath)
 	if err != nil {
 		http.Error(w, "thumbnail read error", http.StatusInternalServerError)
 		return
 	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		http.Error(w, "thumbnail stat error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	http.ServeContent(w, r, "", fi.ModTime(), f)
 }
 
 // PATCH /api/v1/assets/{id}
