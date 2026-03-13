@@ -107,6 +107,7 @@ func (s *Server) Router() http.Handler {
 		// Public
 		r.Post("/auth/login", authH.Login)
 		r.Get("/server/info", infoH.Info)
+		r.Get("/server/tunnel-url", infoH.TunnelURL)
 
 		// Authenticated
 		r.Group(func(r chi.Router) {
