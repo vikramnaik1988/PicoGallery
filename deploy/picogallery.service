@@ -1,0 +1,16 @@
+[Unit]
+Description=Helles-Galerie Photo Server
+After=network.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/PicoGallery
+ExecStart=/home/admin/PicoGallery/picogallery
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -30,6 +30,18 @@ func NewInfoHandler(db *sql.DB, originalsRoot, storageRoot, version string, svc 
 	}
 }
 
+// GET /api/v1/server/tunnel-url  (public — used by QR code on settings page)
+func (h *InfoHandler) TunnelURL(w http.ResponseWriter, r *http.Request) {
+	// tunnel.url is written by start-tunnel.sh next to the binary
+	data, err := os.ReadFile("tunnel.url")
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]string{"url": ""})
+		return
+	}
+	url := strings.TrimSpace(string(data))
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
 // GET /api/v1/server/info
 func (h *InfoHandler) Info(w http.ResponseWriter, r *http.Request) {
 	// Primary storage metric: the HDD that holds originals

@@ -2302,9 +2302,56 @@ function renderSettings() {
         <button class="btn btn-ghost" onclick="manageAPIKeys()">Manage API Keys</button>
       </div>
       <div style="height:1px;background:var(--border);margin:20px 0"></div>
+      <div class="form-group">
+        <div style="font-family:var(--font-serif);font-size:1.2rem;margin-bottom:4px">Connect Mobile App</div>
+        <div style="font-size:0.82rem;color:var(--text2);margin-bottom:16px">Scan this QR code with the Helles-Galerie mobile app to connect instantly.</div>
+        <div id="qr-box" style="width:180px;height:180px;background:var(--surface);border:1px solid var(--border);border-radius:10px;display:flex;align-items:center;justify-content:center;margin-bottom:12px">
+          <canvas id="qr-canvas" width="180" height="180"></canvas>
+        </div>
+        <div style="font-size:0.75rem;color:var(--text2);word-break:break-all" id="qr-url-label"></div>
+      </div>
+      <div style="height:1px;background:var(--border);margin:20px 0"></div>
       <button class="btn btn-danger" onclick="logout()">Sign Out</button>
     </div>
   `;
+  renderQR();
+}
+
+async function renderQR() {
+  const canvas = document.getElementById('qr-canvas');
+  const label = document.getElementById('qr-url-label');
+  if (!canvas) return;
+
+  // Prefer the Cloudflare tunnel URL; fall back to current origin
+  let url = window.location.origin;
+  try {
+    const res = await fetch(`${State.serverUrl}/server/tunnel-url`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.url) url = data.url;
+    }
+  } catch (_) {}
+
+  if (label) label.textContent = url;
+
+  const size = 180;
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, size, size);
+    ctx.drawImage(img, 0, 0, size, size);
+  };
+  img.onerror = () => {
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#333';
+    ctx.font = '10px monospace';
+    ctx.fillText('QR unavailable', 10, 90);
+    ctx.fillText('(no internet?)', 10, 105);
+  };
+  img.src = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(url)}`;
 }
 
 async function saveProfile() {

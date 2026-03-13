@@ -1,0 +1,15 @@
+[Unit]
+Description=Cloudflare Tunnel
+After=network.target picogallery.service
+
+[Service]
+Type=simple
+User=admin
+ExecStart=/bin/bash /home/admin/PicoGallery/start-tunnel.sh
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
