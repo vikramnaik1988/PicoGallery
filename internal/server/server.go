@@ -83,7 +83,7 @@ func (s *Server) Router() http.Handler {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(120 * time.Second))
+	r.Use(middleware.Timeout(600 * time.Second))
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -136,6 +136,7 @@ func (s *Server) Router() http.Handler {
 
 			// Assets
 			r.Post("/assets/upload", assetH.Upload)
+			r.Post("/assets/upload/chunk", assetH.UploadChunk)
 			r.Post("/assets/check-duplicates", assetH.CheckDuplicates)
 			r.Post("/assets/bulk-delete", assetH.BulkDelete)
 			r.Get("/assets/timeline", assetH.Timeline)

@@ -15,6 +15,7 @@ import (
 	"log"
 	"mime"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -298,9 +299,72 @@ var thumbnailTiers = []thumbSpec{
 	{name: "large", maxSide: 1080, square: false, quality: 0},
 }
 
+func generateVideoThumbnails(job thumbJob) error {
+	// Extract a frame at 1s (fall back to first frame if video is shorter)
+	tmp, err := os.CreateTemp("", "vthumb_*.jpg")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+	defer os.Remove(tmpPath)
+
+	// Try at 1 second first
+	cmd := exec.Command("ffmpeg", "-y", "-ss", "00:00:01", "-i", job.originalPath,
+		"-vframes", "1", "-q:v", "2", tmpPath)
+	if err := cmd.Run(); err != nil {
+		// Fall back to very first frame
+		cmd2 := exec.Command("ffmpeg", "-y", "-i", job.originalPath,
+			"-vframes", "1", "-q:v", "2", tmpPath)
+		if err2 := cmd2.Run(); err2 != nil {
+			return fmt.Errorf("ffmpeg frame extract: %w", err2)
+		}
+	}
+
+	f, err := os.Open(tmpPath)
+	if err != nil {
+		return err
+	}
+	img, _, err := image.Decode(f)
+	f.Close()
+	if err != nil {
+		return fmt.Errorf("decode video frame: %w", err)
+	}
+
+	for _, spec := range thumbnailTiers {
+		var dst image.Image
+		if spec.square {
+			dst = cropSquare(img, spec.maxSide)
+		} else {
+			dst = resizeFit(img, spec.maxSide)
+		}
+		dir := filepath.Join(job.thumbRoot, spec.name, job.assetID[:2])
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+		out, err := os.Create(filepath.Join(dir, job.assetID+".jpg"))
+		if err != nil {
+			return err
+		}
+		q := spec.quality
+		if q == 0 {
+			q = job.quality
+		}
+		err = jpeg.Encode(out, dst, &jpeg.Options{Quality: q})
+		out.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func generateThumbnails(job thumbJob) error {
+	if strings.HasPrefix(job.mediaType, "video/") {
+		return generateVideoThumbnails(job)
+	}
 	if !strings.HasPrefix(job.mediaType, "image/") {
-		return nil // non-image files have no thumbnail
+		return nil // non-image/non-video files have no thumbnail
 	}
 
 	var img image.Image

@@ -75,6 +75,128 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// POST /api/v1/assets/upload/chunk
+// Uploads one chunk of a large file. When all chunks are received the server
+// assembles them and saves the asset exactly like a regular upload.
+// Form fields: upload_id, chunk_index, total_chunks, filename, mime_type,
+//              device_asset_id, device_id, taken_at, chunk (the binary slice).
+func (h *Handler) UploadChunk(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeError(w, "BAD_REQUEST", "Could not parse multipart form.", http.StatusBadRequest)
+		return
+	}
+
+	uploadID := r.FormValue("upload_id")
+	filename := r.FormValue("filename")
+	if uploadID == "" || filename == "" {
+		writeError(w, "BAD_REQUEST", "Missing upload_id or filename.", http.StatusBadRequest)
+		return
+	}
+
+	chunkIndex, err := strconv.Atoi(r.FormValue("chunk_index"))
+	if err != nil || chunkIndex < 0 {
+		writeError(w, "BAD_REQUEST", "Invalid chunk_index.", http.StatusBadRequest)
+		return
+	}
+	totalChunks, err := strconv.Atoi(r.FormValue("total_chunks"))
+	if err != nil || totalChunks < 1 {
+		writeError(w, "BAD_REQUEST", "Invalid total_chunks.", http.StatusBadRequest)
+		return
+	}
+
+	chunk, _, err := r.FormFile("chunk")
+	if err != nil {
+		writeError(w, "BAD_REQUEST", "Missing 'chunk' field.", http.StatusBadRequest)
+		return
+	}
+	defer chunk.Close()
+
+	// Stage chunks under tmp/<upload_id>/
+	uploadDir := filepath.Join(h.svc.tmpRoot, "chunks_"+uploadID)
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		writeError(w, "INTERNAL_ERROR", "Failed to create staging directory.", http.StatusInternalServerError)
+		return
+	}
+
+	chunkPath := filepath.Join(uploadDir, fmt.Sprintf("%05d", chunkIndex))
+	cf, err := os.Create(chunkPath)
+	if err != nil {
+		writeError(w, "INTERNAL_ERROR", "Failed to write chunk.", http.StatusInternalServerError)
+		return
+	}
+	if _, err := io.Copy(cf, chunk); err != nil {
+		cf.Close()
+		writeError(w, "INTERNAL_ERROR", "Failed to write chunk data.", http.StatusInternalServerError)
+		return
+	}
+	cf.Close()
+
+	// Count received chunks
+	entries, _ := os.ReadDir(uploadDir)
+	if len(entries) < totalChunks {
+		writeJSON(w, http.StatusAccepted, map[string]interface{}{
+			"status":   "partial",
+			"received": len(entries),
+			"total":    totalChunks,
+		})
+		return
+	}
+
+	// All chunks received — assemble via pipe into SaveAsset
+	mediaType := r.FormValue("mime_type")
+	if mediaType == "" {
+		mediaType = detectMediaType(filename)
+	}
+	deviceAssetID := r.FormValue("device_asset_id")
+	deviceID := r.FormValue("device_id")
+	var takenAt *time.Time
+	if s := r.FormValue("taken_at"); s != "" {
+		if t, err2 := time.Parse(time.RFC3339, s); err2 == nil {
+			takenAt = &t
+		}
+	}
+
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		for i := 0; i < totalChunks; i++ {
+			p := filepath.Join(uploadDir, fmt.Sprintf("%05d", i))
+			f, err := os.Open(p)
+			if err != nil {
+				_ = pw.CloseWithError(fmt.Errorf("chunk %d missing", i))
+				return
+			}
+			_, err = io.Copy(pw, f)
+			f.Close()
+			if err != nil {
+				_ = pw.CloseWithError(err)
+				return
+			}
+		}
+	}()
+
+	asset, isDup, err := h.svc.SaveAsset(user.ID, filename, mediaType, pr, deviceAssetID, deviceID, takenAt)
+	_ = os.RemoveAll(uploadDir)
+	if err != nil {
+		writeError(w, "INTERNAL_ERROR", fmt.Sprintf("Assembly failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	status := "created"
+	httpStatus := http.StatusCreated
+	if isDup {
+		status = "duplicate"
+		httpStatus = http.StatusOK
+	}
+	writeJSON(w, httpStatus, map[string]interface{}{
+		"id":        asset.ID,
+		"status":    status,
+		"duplicate": isDup,
+	})
+}
+
 // GET /api/v1/assets
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
@@ -578,6 +700,14 @@ func detectMediaType(filename string) string {
 		return "video/x-matroska"
 	case ".webm":
 		return "video/webm"
+	case ".hevc":
+		return "video/hevc"
+	case ".m4v":
+		return "video/x-m4v"
+	case ".avi":
+		return "video/x-msvideo"
+	case ".3gp":
+		return "video/3gpp"
 	// Documents
 	case ".pdf":
 		return "application/pdf"
