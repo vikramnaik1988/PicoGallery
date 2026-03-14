@@ -386,8 +386,9 @@ func (h *Handler) ServeThumbnail(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", "image/jpeg")
-		http.ServeFile(w, r, origPath)
+		// Thumbnail not ready yet — return 404 so the client retries later
+		// rather than streaming the full original (can be MBs) through the tunnel.
+		http.NotFound(w, r)
 		return
 	}
 
