@@ -1569,10 +1569,41 @@ async function renderGallery() {
   }
 
   State.galleryHasMore = data.total > allAssets.length;
+
+  // Merge any just-uploaded assets that aren't in the first page (e.g. old photos)
+  let scrollToId = null;
+  if (State.pendingUploads?.length) {
+    const existingIds = new Set(allAssets.map(a => a.id));
+    const missing = State.pendingUploads.filter(a => !existingIds.has(a.id));
+    if (missing.length) {
+      allAssets = allAssets.concat(missing);
+      allAssets.sort((a, b) => {
+        const da = a.taken_at || a.created_at || '';
+        const db = b.taken_at || b.created_at || '';
+        return da < db ? 1 : da > db ? -1 : 0;
+      });
+    }
+    // Scroll to the oldest uploaded asset so user can find it
+    const sorted = [...State.pendingUploads].sort((a, b) => {
+      const da = a.taken_at || a.created_at || '';
+      const db = b.taken_at || b.created_at || '';
+      return da < db ? 1 : da > db ? -1 : 0;
+    });
+    scrollToId = sorted[sorted.length - 1]?.id;
+    State.pendingUploads = null;
+  }
+
   container.innerHTML = galleryGroupsHtml(allAssets) +
     `<div id="gallery-sentinel" style="height:1px"></div>`;
   container.querySelectorAll('img[data-src]').forEach(img => imgObserver.observe(img));
   setupGallerySentinel();
+
+  if (scrollToId) {
+    requestAnimationFrame(() => {
+      const el = document.getElementById('cell-' + scrollToId);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }
 }
 
 function galleryGroupsHtml(assets) {
@@ -2151,6 +2182,7 @@ async function uploadFileChunked(file, itemId) {
 async function handleFiles(files) {
   if (!files.length) return;
   const queue = document.getElementById('upload-queue');
+  const uploadedAssets = [];
 
   for (const file of files) {
     const itemId = 'upitem_' + Math.random().toString(36).substr(2,8);
@@ -2191,6 +2223,7 @@ async function handleFiles(files) {
       } else {
         if (dot) dot.className = 'status-dot done';
         if (status) { status.textContent = 'Done'; status.style.color = 'var(--accent)'; }
+        if (data.id) uploadedAssets.push(data);
       }
     } catch (err) {
       const dot = document.getElementById(itemId + '-dot');
@@ -2199,6 +2232,8 @@ async function handleFiles(files) {
       if (status) { status.textContent = 'Failed'; status.style.color = 'var(--red)'; }
     }
   }
+  // Store uploaded assets so renderGallery can insert them at the right position
+  if (uploadedAssets.length) State.pendingUploads = uploadedAssets;
   toast(`Uploaded ${files.length} file(s) — navigating to Photos…`, 'success');
   setTimeout(() => navigate('gallery'), 1200);
 }

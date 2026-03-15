@@ -69,9 +69,12 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 		httpStatus = http.StatusOK
 	}
 	writeJSON(w, httpStatus, map[string]interface{}{
-		"id":        asset.ID,
-		"status":    status,
-		"duplicate": isDup,
+		"id":         asset.ID,
+		"status":     status,
+		"duplicate":  isDup,
+		"taken_at":   asset.TakenAt,
+		"filename":   asset.Filename,
+		"media_type": asset.MediaType,
 	})
 }
 
@@ -191,9 +194,12 @@ func (h *Handler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 		httpStatus = http.StatusOK
 	}
 	writeJSON(w, httpStatus, map[string]interface{}{
-		"id":        asset.ID,
-		"status":    status,
-		"duplicate": isDup,
+		"id":         asset.ID,
+		"status":     status,
+		"duplicate":  isDup,
+		"taken_at":   asset.TakenAt,
+		"filename":   asset.Filename,
+		"media_type": asset.MediaType,
 	})
 }
 
