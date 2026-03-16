@@ -1,0 +1,15 @@
+# Secrets
+**/.env
+*.env
+
+# Binaries
+bin/
+
+# Build artifacts
+*.exe
+*.o
+
+# Python
+__pycache__/
+*.pyc
+.venv/
