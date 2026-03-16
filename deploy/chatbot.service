@@ -1,0 +1,17 @@
+[Unit]
+Description=Helles-Galerie Telegram Bot
+After=network.target picogallery.service
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/PicoGallery/Chatbot
+EnvironmentFile=/home/admin/PicoGallery/Chatbot/.env
+ExecStart=/usr/bin/python3 /home/admin/PicoGallery/Chatbot/bot.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
