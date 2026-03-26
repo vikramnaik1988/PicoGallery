@@ -1,4 +1,4 @@
-# PicoGallery
+# PicoGallery with USB config
 
 **A lightweight, self-hosted photo gallery server for single-board computers.**
 
