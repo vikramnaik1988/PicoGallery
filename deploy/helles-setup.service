@@ -1,0 +1,16 @@
+[Unit]
+Description=Helles-Galerie WiFi Provisioning
+# Run before gallery services so we can configure WiFi first
+Before=picogallery.service cloudflared.service chatbot.service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 /home/admin/PicoGallery/provision.py
+Restart=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

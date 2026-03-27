@@ -201,7 +201,8 @@ HTML_SUCCESS = """<!DOCTYPE html>
 </html>""".replace("STYLE_PLACEHOLDER", _STYLE_READY)
 
 
-CHATBOT_ENV_PATH = "/home/admin/PicoGallery/Chatbot/.env" if PRODUCTION else os.path.join(os.path.dirname(__file__), "..", "Chatbot", ".env")
+CHATBOT_ENV_PATH  = "/home/admin/PicoGallery/Chatbot/.env" if PRODUCTION else os.path.join(os.path.dirname(__file__), "..", "Chatbot", ".env")
+WEB_CREATOR_PY    = "/home/admin/PicoGallery/Chatbot/BotCreator/web_creator.py" if PRODUCTION else os.path.join(os.path.dirname(__file__), "..", "Chatbot", "BotCreator", "web_creator.py")
 
 HTML_CHATBOT_SETUP = """<!DOCTYPE html>
 <html lang="en">
@@ -296,6 +297,102 @@ HTML_CHATBOT_DONE = """<!DOCTYPE html>
 </html>""".replace("STYLE_PLACEHOLDER", _STYLE_READY)
 
 
+HTML_BOT_RECONFIGURE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Helles-Galerie Setup</title>
+  STYLE_PLACEHOLDER
+  <style>
+    .top-label {
+      position: fixed;
+      top: 24px;
+      left: 28px;
+      font-size: 0.95rem;
+      font-weight: 500;
+      color: var(--accent);
+      letter-spacing: 0.02em;
+    }
+    .center-content {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 12px;
+    }
+    .center-content h2 {
+      font-family: var(--font-serif);
+      font-size: 1.6rem;
+      color: var(--text);
+      letter-spacing: -0.02em;
+    }
+    .center-content p {
+      font-size: 0.88rem;
+      color: var(--text2);
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <div class="top-label">⚠️ Bot Setup Required</div>
+  <div class="card center-content">
+    <h2>Reconnecting…</h2>
+    <p>The hotspot will shut down.<br><br>
+    Reconnect your phone to your home WiFi,<br>
+    <strong>Lets create a personal chatbot:</strong></p>
+    <p style="font-size:0.78rem;color:var(--text3);margin-top:4px;">It may take 30–60 seconds to start up.</p>
+    <a href="HOSTNAME_URL" style="width:100%;text-decoration:none;">
+      <button style="width:100%;margin-top:8px">Next →</button>
+    </a>
+  </div>
+</body>
+</html>""".replace("STYLE_PLACEHOLDER", _STYLE_READY)
+
+
+def wifi_already_in_nm():
+    """Returns the saved WiFi profile name if one exists in NetworkManager, else None."""
+    if not PRODUCTION:
+        return None
+    try:
+        result = subprocess.run(
+            ["nmcli", "-t", "-f", "TYPE,NAME", "connection", "show"],
+            capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split(":", 1)
+            if len(parts) == 2 and parts[0] == "802-11-wireless" and parts[1] not in ("Hotspot", HOTSPOT_SSID):
+                return parts[1]
+    except Exception:
+        pass
+    return None
+
+
+def reconnect_saved_wifi(profile):
+    """Bring down hotspot and reconnect to saved WiFi profile in background."""
+    import time
+    time.sleep(2)  # let the HTTP response be delivered first
+    try:
+        subprocess.run(["nmcli", "connection", "down", "Hotspot"], timeout=10, capture_output=True)
+        time.sleep(1)
+        subprocess.run(["nmcli", "connection", "up", profile], timeout=30, capture_output=True)
+        open(WIFI_CONFIG_FLAG, "w").close()
+        print(f"[provision] Reconnected to '{profile}', hotspot down.")
+    except Exception as e:
+        print(f"[provision] reconnect_saved_wifi error: {e}")
+
+
+def start_web_creator():
+    """Start web_creator.py in background if it exists."""
+    if os.path.exists(WEB_CREATOR_PY):
+        subprocess.run(["pkill", "-f", "web_creator.py"], capture_output=True)
+        subprocess.run(["fuser", "-k", "5678/tcp"], capture_output=True)
+        subprocess.Popen([sys.executable, WEB_CREATOR_PY])
+        print("[provision] web_creator.py started on port 5678.")
+    else:
+        print(f"[provision] web_creator.py not found at {WEB_CREATOR_PY}")
+
+
 def save_chatbot_env(bot_token, chat_id):
     tunnel_file = "/home/admin/PicoGallery/tunnel.url"
     content = f"TELEGRAM_TOKEN={bot_token}\nCHAT_ID={chat_id}\nTUNNEL_FILE={tunnel_file}\n"
@@ -347,6 +444,7 @@ def get_wifi_networks():
 def apply_config(ssid, wifi_password):
     if not PRODUCTION:
         print(f"[mock] Would connect to WiFi: {ssid}")
+        start_web_creator()
         return
 
     import time
@@ -366,17 +464,24 @@ def apply_config(ssid, wifi_password):
     # Mark WiFi as configured
     open(WIFI_CONFIG_FLAG, "w").close()
 
-    # Start gallery services
-    subprocess.run(["sudo", "systemctl", "start", "picogallery", "cloudflared", "chatbot"])
-
-    # Stop provisioning service
-    subprocess.run(["sudo", "systemctl", "stop", "helles-setup"])
+    # Start web_creator so user can set up bot after reconnecting to home WiFi
+    start_web_creator()
 
 
 class ProvisionHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/chatbot-setup":
             self._respond(200, HTML_CHATBOT_SETUP)
+            return
+        # WiFi already saved in NetworkManager — reconnect to home WiFi, go straight to bot setup
+        saved_profile = wifi_already_in_nm()
+        if saved_profile:
+            start_web_creator()
+            hostname = subprocess.run(["hostname"], capture_output=True, text=True).stdout.strip()
+            next_url = f"http://{hostname}.local:5678"
+            page = HTML_BOT_RECONFIGURE.replace("HOSTNAME_URL", next_url)
+            self._respond(200, page)
+            threading.Thread(target=reconnect_saved_wifi, args=(saved_profile,), daemon=True).start()
             return
         networks = get_wifi_networks()
         options = "\n".join(f'<option value="{n}">{n}</option>' for n in networks)
@@ -405,7 +510,8 @@ class ProvisionHandler(BaseHTTPRequestHandler):
         wifi_password = params.get("wifi_password", [""])[0]
 
         hostname = socket.gethostname()
-        page = HTML_SUCCESS.replace("HOSTNAME_URL", f"http://{hostname}.local:3456").replace("HOSTNAME_LABEL", f"{hostname}.local:3456")
+        next_url = f"http://{hostname}.local:5678" if PRODUCTION else "http://localhost:5678"
+        page = HTML_SUCCESS.replace("HOSTNAME_URL", next_url)
         self._respond(200, page)
         threading.Thread(
             target=apply_config,
@@ -444,6 +550,7 @@ def main():
     else:
         print(f"[dev] Running in Windows test mode on http://localhost:{PORT}")
 
+    HTTPServer.allow_reuse_address = True
     server = HTTPServer(("0.0.0.0", PORT), ProvisionHandler)
     server.serve_forever()
 

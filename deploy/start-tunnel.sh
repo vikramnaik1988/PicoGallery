@@ -25,7 +25,7 @@ send_telegram() {
 
 LAST_URL=""
 
-cloudflared tunnel --url http://localhost:3456 2>&1 | while IFS= read -r line; do
+cloudflared tunnel --protocol http2 --url http://localhost:3456 2>&1 | while IFS= read -r line; do
   echo "$line"
   if [[ "$line" == *"trycloudflare.com"* ]]; then
     url=$(echo "$line" | grep -oP 'https://[a-z0-9\-]+\.trycloudflare\.com')

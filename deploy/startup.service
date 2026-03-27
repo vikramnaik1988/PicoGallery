@@ -1,0 +1,15 @@
+[Unit]
+Description=PicoGallery Startup Orchestrator
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/bin/bash /home/admin/PicoGallery/startup.sh
+Restart=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
