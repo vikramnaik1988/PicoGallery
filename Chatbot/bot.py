@@ -93,15 +93,15 @@ async def _pin_url(app, url: str):
         logger.warning(f"Could not pin URL: {e}")
 
 
-async def _watch_tunnel_and_pin(app):
-    """Wait up to 90 s for the tunnel URL file to appear, then pin it."""
-    for _ in range(45):
-        await asyncio.sleep(2)
+async def _watch_tunnel_url(app):
+    """Continuously watch tunnel.url and re-pin whenever the URL changes."""
+    pinned = None
+    while True:
+        await asyncio.sleep(5)
         url = read_tunnel_url()
-        if url:
+        if url and url != pinned:
             await _pin_url(app, url)
-            return
-    logger.warning("Tunnel URL not available after 90 s — skipping pin")
+            pinned = url
 
 
 async def on_startup(app):
@@ -109,9 +109,8 @@ async def on_startup(app):
     url = read_tunnel_url()
     if url:
         await _pin_url(app, url)
-    else:
-        # Tunnel not ready yet — watch in background and pin when it appears
-        asyncio.create_task(_watch_tunnel_and_pin(app))
+    # Always start the watcher — catches URL changes after startup too
+    asyncio.create_task(_watch_tunnel_url(app))
 
 
 # --- Local HTTP server (port 3457) — lets the mobile app fetch the tunnel URL ---
