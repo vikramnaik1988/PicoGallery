@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -93,11 +94,11 @@ async def _pin_url(app, url: str):
         logger.warning(f"Could not pin URL: {e}")
 
 
-async def _watch_tunnel_url(app):
-    """Continuously watch tunnel.url and re-pin whenever the URL changes."""
-    pinned = None
+async def _watch_tunnel_url(app, initial_url: str):
+    """Re-pin whenever tunnel.url changes from the last known value."""
+    pinned = initial_url
     while True:
-        await asyncio.sleep(5)
+        await asyncio.sleep(10)
         url = read_tunnel_url()
         if url and url != pinned:
             await _pin_url(app, url)
@@ -106,11 +107,10 @@ async def _watch_tunnel_url(app):
 
 async def on_startup(app):
     await app.bot.send_message(chat_id=CHAT_ID, text="✅ Helles-Galerie bot started")
-    url = read_tunnel_url()
+    url = read_tunnel_url() or ""
     if url:
         await _pin_url(app, url)
-    # Always start the watcher — catches URL changes after startup too
-    asyncio.create_task(_watch_tunnel_url(app))
+    asyncio.create_task(_watch_tunnel_url(app, initial_url=url))
 
 
 # --- Local HTTP server (port 3457) — lets the mobile app fetch the tunnel URL ---
