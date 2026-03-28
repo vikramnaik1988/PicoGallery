@@ -16,9 +16,7 @@ log() { echo "[startup] $(date '+%H:%M:%S') $*"; }
 
 stop_all_services() {
     log "Stopping all services..."
-    systemctl stop picogallery chatbot 2>/dev/null || true
-    pkill -f "web_creator.py" 2>/dev/null || true
-    fuser -k 5678/tcp 2>/dev/null || true
+    systemctl stop picogallery chatbot botcreator 2>/dev/null || true
     sleep 1
 }
 
@@ -44,14 +42,10 @@ run_provisioning() {
     NEW_CONFIG=true
 }
 
-# Runs the web bot creator and blocks until both TELEGRAM_TOKEN and CHAT_ID are saved.
+# Starts botcreator service and blocks until both TELEGRAM_TOKEN and CHAT_ID are saved.
 run_bot_creator() {
-    log "Starting bot creator on http://raspberrypi.local:5678 ..."
-    pkill -f "web_creator.py" 2>/dev/null || true
-    fuser -k 5678/tcp 2>/dev/null || true
-    sleep 1
-    python3 "$WEB_CREATOR_PY" &
-    WC_PID=$!
+    log "Starting botcreator service on http://raspberrypi.local:5678 ..."
+    systemctl start botcreator
     log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     log "  Open http://raspberrypi.local:5678 to create your bot."
     log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -61,8 +55,6 @@ run_bot_creator() {
         [ -n "$TOKEN" ] && [ -n "$CHAT" ] && break
         sleep 2
     done
-    kill $WC_PID 2>/dev/null
-    wait $WC_PID 2>/dev/null
     log "Bot creator done — token and chat ID saved."
 }
 

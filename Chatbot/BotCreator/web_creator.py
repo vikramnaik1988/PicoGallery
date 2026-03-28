@@ -6,7 +6,7 @@ Run: python web_creator.py
 Open: http://localhost:5678
 """
 
-import os, sys, re, asyncio, time, threading
+import json, os, sys, re, asyncio, time, threading
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -573,9 +573,9 @@ def _page_existing_bot() -> str:
     return _page("Existing bot", body)
 
 def _page_done() -> str:
-    token   = _s.get("token",    "")
+    token    = _s.get("token",    "")
     bot_user = _s.get("bot_user", "")
-    chat_id = _s.get("chat_id",  "")
+    chat_id  = _s.get("chat_id",  "") or ""
     body    = f"""
 {_header("All done!")}
 {_terminal_html()}
@@ -584,12 +584,12 @@ def _page_done() -> str:
   <div class="result-row"><span class="result-key">Token</span><span class="result-val">{token[:24]}…</span></div>
   <div class="result-row"><span class="result-key">Chat ID</span><span class="result-val">{chat_id or "check getUpdates"}</span></div>
 </div>
-<p style="font-size:0.78rem;color:var(--text3);margin-top:16px">
-  Credentials saved to <code style="color:var(--accent)">{_BOT_ENV}</code>
+<p style="font-size:0.85rem;color:var(--text2);margin-top:16px;text-align:center">
+  You can now close this page. The app will pick up the credentials automatically.
 </p>
 <form method="POST" action="/submit">
   <input type="hidden" name="action" value="restart">
-  <button type="submit" class="btn-ghost" style="width:100%;margin-top:16px;padding:12px;border-radius:var(--radius);cursor:pointer">Create another bot</button>
+  <button type="submit" class="btn-ghost" style="width:100%;margin-top:12px;padding:12px;border-radius:var(--radius);cursor:pointer">Create another bot</button>
 </form>"""
     return _page("Done!", body)
 
@@ -622,7 +622,23 @@ def _render() -> str:
 # ── HTTP Handler ───────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        qs = parse_qs(urlparse(self.path).query)
+        path = urlparse(self.path).path
+        qs   = parse_qs(urlparse(self.path).query)
+
+        # /config — returns saved bot credentials (token + chat_id) as JSON
+        if path == "/config":
+            bot_env = _read_env(_BOT_ENV)
+            token   = bot_env.get("TELEGRAM_TOKEN", "")
+            chat_id = bot_env.get("CHAT_ID", "")
+            body = json.dumps({"token": token, "chat_id": chat_id}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if qs.get("mode", [""])[0] == "app":
             # Always start fresh when opened from the mobile app
             _s.update({"step": "phone", "from_app": True, "log": [], "error": None,

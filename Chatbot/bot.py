@@ -79,12 +79,39 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error: {context.error}")
 
 
+async def _pin_url(app, url: str):
+    try:
+        text = f"🔗 {url}"
+        sent = await app.bot.send_message(chat_id=CHAT_ID, text=text)
+        await app.bot.pin_chat_message(
+            chat_id=CHAT_ID,
+            message_id=sent.message_id,
+            disable_notification=True,
+        )
+        logger.info(f"Pinned tunnel URL: {url}")
+    except Exception as e:
+        logger.warning(f"Could not pin URL: {e}")
+
+
+async def _watch_tunnel_and_pin(app):
+    """Wait up to 90 s for the tunnel URL file to appear, then pin it."""
+    for _ in range(45):
+        await asyncio.sleep(2)
+        url = read_tunnel_url()
+        if url:
+            await _pin_url(app, url)
+            return
+    logger.warning("Tunnel URL not available after 90 s — skipping pin")
+
+
 async def on_startup(app):
+    await app.bot.send_message(chat_id=CHAT_ID, text="✅ Helles-Galerie bot started")
     url = read_tunnel_url()
-    msg = "✅ Helles-Galerie bot started"
     if url:
-        msg += f"\n🔗 {url}"
-    await app.bot.send_message(chat_id=CHAT_ID, text=msg)
+        await _pin_url(app, url)
+    else:
+        # Tunnel not ready yet — watch in background and pin when it appears
+        asyncio.create_task(_watch_tunnel_and_pin(app))
 
 
 # --- Local HTTP server (port 3457) — lets the mobile app fetch the tunnel URL ---
@@ -96,6 +123,16 @@ class _UrlHandler(BaseHTTPRequestHandler):
             body = json.dumps({"url": url}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/bot-config":
+            token = os.getenv("TELEGRAM_TOKEN", "")
+            chat_id = os.getenv("CHAT_ID", "")
+            body = json.dumps({"token": token, "chat_id": chat_id}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
