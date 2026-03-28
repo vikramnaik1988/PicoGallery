@@ -9,7 +9,7 @@ Open: http://localhost:5678
 import os, sys, re, asyncio, time, threading
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, str(Path(__file__).parent))
 from create_bot import verify_token
 
@@ -22,6 +22,7 @@ _BOT_ENV = _DIR.parent / ".env"   # BOT_TOKEN / CHAT_ID stored here (Chatbot/.en
 _s = {
     "step":             "phone",   # phone | reuse | mytg_code | bot_details |
                                    # tg_code | creating | existing_bot | done | error
+    "from_app":         False,     # True when opened via ?mode=app (from mobile app)
     "log":              [],
     "error":            None,
     "phone":            None,
@@ -552,22 +553,22 @@ def _page_existing_bot() -> str:
     token = _s.get("existing_token", "")
     user  = _s.get("existing_user",  "")
     cid   = _s.get("existing_chat_id", "")
+    label = f"@{user}" if user else "existing bot"
     body  = f"""
-{_header("Existing bot found")}
+{_header("Bot found — continue or create new?")}
 {_terminal_html()}
 <div class="result-row"><span class="result-key">Username</span><span class="result-val">@{user}</span></div>
 <div class="result-row"><span class="result-key">Token</span><span class="result-val">{token[:16]}…</span></div>
 <div class="result-row"><span class="result-key">Chat ID</span><span class="result-val">{cid or "not set"}</span></div>
-<p style="font-size:0.82rem;color:var(--text2);margin-top:16px">Create a new bot anyway?</p>
-<form method="POST" action="/submit">
+<form method="POST" action="/submit" style="margin-top:16px">
   <input type="hidden" name="action" value="confirm_new">
-  <input type="hidden" name="choice" value="y">
-  <button type="submit">Yes, create new bot</button>
+  <input type="hidden" name="choice" value="n">
+  <button type="submit">Continue with {label}</button>
 </form>
 <form method="POST" action="/submit">
   <input type="hidden" name="action" value="confirm_new">
-  <input type="hidden" name="choice" value="n">
-  <button type="submit" class="btn-ghost" style="width:100%;margin-top:10px;padding:12px;border-radius:var(--radius);cursor:pointer">No, done</button>
+  <input type="hidden" name="choice" value="y">
+  <button type="submit" class="btn-ghost" style="width:100%;margin-top:10px;padding:12px;border-radius:var(--radius);cursor:pointer">Create a new bot instead</button>
 </form>"""
     return _page("Existing bot", body)
 
@@ -621,6 +622,16 @@ def _render() -> str:
 # ── HTTP Handler ───────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        qs = parse_qs(urlparse(self.path).query)
+        if qs.get("mode", [""])[0] == "app":
+            # Always start fresh when opened from the mobile app
+            _s.update({"step": "phone", "from_app": True, "log": [], "error": None,
+                       "phone": None, "api_id": None, "api_hash": None,
+                       "mytg_session": None, "mytg_hash": None,
+                       "phone_code_hash": None, "already_authed": False,
+                       "existing_token": None, "existing_user": None,
+                       "existing_chat_id": None, "bot_name": None,
+                       "bot_user": None, "token": None, "chat_id": None})
         self._send(200, _render())
 
     def do_POST(self):
@@ -630,7 +641,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             if action == "restart":
-                _s.update({"step": "phone", "log": [], "error": None,
+                _s.update({"step": "phone", "from_app": False, "log": [], "error": None,
                            "phone": None, "api_id": None, "api_hash": None,
                            "mytg_session": None, "mytg_hash": None,
                            "phone_code_hash": None, "already_authed": False,
@@ -646,24 +657,54 @@ class Handler(BaseHTTPRequestHandler):
                 _log("  Telegram Bot Creator  —  fully headless CLI")
                 _log("=" * 55)
                 _log(f"\n  Phone number: {phone}")
-                env = _read_env(_BC_ENV)
-                if env.get("API_ID") and env.get("API_HASH"):
-                    _s["api_id"]   = env["API_ID"]
-                    _s["api_hash"] = env["API_HASH"]
-                    _log(f"\n  Found existing credentials in .env (API_ID={env['API_ID']}).")
+                bc_env  = _read_env(_BC_ENV)
+                bot_env = _read_env(_BOT_ENV)
+                saved_phone = bc_env.get("PHONE", "")
+                tok  = bot_env.get("TELEGRAM_TOKEN", "") or bc_env.get("BOT_TOKEN", "")
+                user = bc_env.get("BOT_USERNAME", "") or bot_env.get("BOT_USERNAME", "")
+                cid  = bot_env.get("CHAT_ID", "") or bc_env.get("CHAT_ID", "")
+
+                def _send_code_thread():
+                    try:
+                        _mytg_send_code(_s["phone"])
+                        _log("  Enter the code Telegram sent to your app / SMS:")
+                        _s["step"] = "mytg_code"
+                    except Exception as e:
+                        _s["error"] = str(e)
+                        _s["step"]  = "error"
+
+                # Phone matches saved phone AND a valid bot token exists → go straight to existing bot
+                # (only when opened from the mobile app via ?mode=app)
+                if _s.get("from_app") and saved_phone and saved_phone == phone and tok:
+                    _log_sep("Existing bot found for this phone number")
+                    _log(f"  BOT_USERNAME : @{user}" if user else f"  BOT_TOKEN    : {tok[:10]}…")
+                    _log(f"  BOT_TOKEN    : {tok[:10]}…")
+                    if bc_env.get("API_ID") and bc_env.get("API_HASH"):
+                        _s["api_id"]   = bc_env["API_ID"]
+                        _s["api_hash"] = bc_env["API_HASH"]
+                    if verify_token(tok, user or tok.split(":")[0]):
+                        _log("  ✓ Token valid.")
+                        _s.update({"existing_token": tok, "existing_user": user,
+                                   "existing_chat_id": cid, "step": "existing_bot"})
+                    else:
+                        _log("  ✗ Token invalid or bot deleted — please create a new bot.")
+                        if bc_env.get("API_ID") and bc_env.get("API_HASH"):
+                            _log_sep("Phase 2 — Create bot via @BotFather")
+                            _log("  Bot display name (e.g. My Awesome Bot):")
+                            _s["step"] = "bot_details"
+                        else:
+                            _log_sep("Phase 1 — Obtain API credentials from my.telegram.org")
+                            _s["step"] = "sending_code"
+                            threading.Thread(target=_send_code_thread, daemon=True).start()
+                elif bc_env.get("API_ID") and bc_env.get("API_HASH"):
+                    _s["api_id"]   = bc_env["API_ID"]
+                    _s["api_hash"] = bc_env["API_HASH"]
+                    _log(f"\n  Found existing credentials in .env (API_ID={bc_env['API_ID']}).")
                     _log("  Use these? (Y/n):")
                     _s["step"] = "reuse"
                 else:
                     _log_sep("Phase 1 — Obtain API credentials from my.telegram.org")
                     _s["step"] = "sending_code"
-                    def _send_code_thread():
-                        try:
-                            _mytg_send_code(_s["phone"])
-                            _log("  Enter the code Telegram sent to your app / SMS:")
-                            _s["step"] = "mytg_code"
-                        except Exception as e:
-                            _s["error"] = str(e)
-                            _s["step"]  = "error"
                     threading.Thread(target=_send_code_thread, daemon=True).start()
 
             elif action == "reuse":

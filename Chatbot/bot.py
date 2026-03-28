@@ -1,7 +1,12 @@
+import json
 import logging
 import os
 import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
+
+_botcreator_proc = None
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -82,6 +87,58 @@ async def on_startup(app):
     await app.bot.send_message(chat_id=CHAT_ID, text=msg)
 
 
+# --- Local HTTP server (port 3457) — lets the mobile app fetch the tunnel URL ---
+
+class _UrlHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/url":
+            url = read_tunnel_url() or ""
+            body = json.dumps({"url": url}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/start-botcreator":
+            global _botcreator_proc
+            if _botcreator_proc is None or _botcreator_proc.poll() is not None:
+                import socket, time as _time
+                _botcreator_proc = subprocess.Popen(
+                    ["python3", "/home/admin/PicoGallery/Chatbot/BotCreator/web_creator.py"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                # Wait until port 5678 is ready (up to 10 seconds)
+                for _ in range(20):
+                    try:
+                        s = socket.create_connection(("127.0.0.1", 5678), timeout=0.5)
+                        s.close()
+                        break
+                    except OSError:
+                        _time.sleep(0.5)
+                already = False
+            else:
+                already = True
+            body = json.dumps({"started": not already, "already_running": already}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+def _start_url_server():
+    server = HTTPServer(("0.0.0.0", 3457), _UrlHandler)
+    server.serve_forever()
+
+
 # --- Main ---
 
 def main():
@@ -96,7 +153,8 @@ def main():
     app.add_handler(CommandHandler("status", status_command))
     app.add_error_handler(error_handler)
 
-    logger.info("Bot is running...")
+    threading.Thread(target=_start_url_server, daemon=True).start()
+    logger.info("Bot is running... (URL server on port 3457)")
     app.run_polling()
 
 
