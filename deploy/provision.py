@@ -12,7 +12,7 @@ import base64
 import socket
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
 # ── Platform switch ────────────────────────────────────────────────────────────
 # Set to True when running on Raspberry Pi, False for local Windows testing.
@@ -350,6 +350,75 @@ HTML_BOT_RECONFIGURE = """<!DOCTYPE html>
 </html>""".replace("STYLE_PLACEHOLDER", _STYLE_READY)
 
 
+_from_app = False  # Set when opened with ?mode=app
+
+TUNNEL_FILE = "/home/admin/PicoGallery/tunnel.url"
+
+def _read_tunnel_url():
+    try:
+        with open(TUNNEL_FILE) as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+HTML_APP_WIFI_STATUS = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Helles-Galerie WiFi</title>
+  STYLE_PLACEHOLDER
+  <style>
+    .top-label { position:fixed; top:24px; left:28px; font-size:0.95rem; font-weight:500; color:var(--accent); letter-spacing:0.02em; }
+    .center-content { display:flex; flex-direction:column; align-items:center; text-align:center; gap:12px; }
+    .center-content h2 { font-family:var(--font-serif); font-size:1.6rem; color:var(--text); letter-spacing:-0.02em; }
+    .center-content p { font-size:0.88rem; color:var(--text2); line-height:1.6; }
+    .url-box { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius); padding:10px 14px; font-size:0.82rem; color:var(--accent); word-break:break-all; width:100%; }
+    .btn-ghost { width:100%; margin-top:16px; padding:12px; background:transparent; color:var(--text3); border:1px solid var(--border); border-radius:var(--radius); cursor:pointer; font-size:0.95rem; font-family:var(--font-sans); }
+  </style>
+</head>
+<body>
+  <div class="top-label">✅ WiFi Connected</div>
+  <div class="card center-content">
+    <h2>WiFi Connected!</h2>
+    <p>Connected to <strong style="color:var(--accent)">SSID_NAME</strong></p>
+    GALLERY_SECTION
+    <form method="POST" action="/reconfigure">
+      <button class="btn-ghost" type="submit">Change WiFi Network</button>
+    </form>
+    <form method="POST" action="/stop-hotspot" style="width:100%;margin-top:8px">
+      <button class="btn-ghost" type="submit">Close</button>
+    </form>
+  </div>
+</body>
+</html>""".replace("STYLE_PLACEHOLDER", _STYLE_READY)
+
+HTML_APP_WIFI_CONNECTING = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Helles-Galerie WiFi</title>
+  STYLE_PLACEHOLDER
+  <style>
+    .top-label { position:fixed; top:24px; left:28px; font-size:0.95rem; font-weight:500; color:var(--accent); letter-spacing:0.02em; }
+    .center-content { display:flex; flex-direction:column; align-items:center; text-align:center; gap:12px; }
+    .center-content h2 { font-family:var(--font-serif); font-size:1.6rem; color:var(--text); letter-spacing:-0.02em; }
+    .center-content p { font-size:0.88rem; color:var(--text2); line-height:1.6; }
+  </style>
+</head>
+<body>
+  <div class="top-label">🔄 Connecting…</div>
+  <div class="card center-content">
+    <h2>Connecting…</h2>
+    <p>The hotspot is shutting down.<br><br>
+    Reconnect your phone to your home WiFi,<br>then close this page and use <strong style="color:var(--accent)">Bot Setup</strong> in the app.</p>
+    <p style="font-size:0.78rem;color:var(--text3);margin-top:4px;">It may take 30–60 seconds to start up.</p>
+  </div>
+</body>
+</html>""".replace("STYLE_PLACEHOLDER", _STYLE_READY)
+
+
 def wifi_already_in_nm():
     """Returns the saved WiFi profile name if one exists in NetworkManager, else None."""
     if not PRODUCTION:
@@ -470,11 +539,44 @@ def apply_config(ssid, wifi_password):
 
 class ProvisionHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/chatbot-setup":
+        global _from_app
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        path = parsed.path
+        if qs.get("mode", [""])[0] == "app":
+            _from_app = True
+
+        if path == "/chatbot-setup":
             self._respond(200, HTML_CHATBOT_SETUP)
             return
-        # WiFi already saved in NetworkManager — reconnect to home WiFi, go straight to bot setup
+
         saved_profile = wifi_already_in_nm()
+
+        if _from_app:
+            # App mode: show WiFi status only, no bot setup redirect
+            if saved_profile:
+                tunnel_url = _read_tunnel_url()
+                if tunnel_url:
+                    gallery_section = (
+                        f'<p>Your gallery is live at:</p>'
+                        f'<div class="url-box">{tunnel_url}</div>'
+                    )
+                else:
+                    gallery_section = '<p style="font-size:0.78rem;color:var(--text3)">Gallery URL not available yet — it may still be starting up.</p>'
+                page = (HTML_APP_WIFI_STATUS
+                        .replace("SSID_NAME", saved_profile)
+                        .replace("GALLERY_SECTION", gallery_section))
+                self._respond(200, page)
+            else:
+                # WiFi not configured — show form
+                networks = get_wifi_networks()
+                options = "\n".join(f'<option value="{n}">{n}</option>' for n in networks)
+                if not options:
+                    options = '<option value="">No networks found — refresh</option>'
+                self._respond(200, HTML_FORM.format(ssid_options=options))
+            return
+
+        # Direct browser: original behaviour
         if saved_profile:
             start_web_creator()
             hostname = subprocess.run(["hostname"], capture_output=True, text=True).stdout.strip()
@@ -491,6 +593,7 @@ class ProvisionHandler(BaseHTTPRequestHandler):
         self._respond(200, html)
 
     def do_POST(self):
+        global _from_app
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length).decode()
         params = parse_qs(body)
@@ -506,13 +609,42 @@ class ProvisionHandler(BaseHTTPRequestHandler):
             ).start()
             return
 
+        if self.path == "/reconfigure":
+            # "Change WiFi Network" button in app mode — reset and show form
+            networks = get_wifi_networks()
+            options = "\n".join(f'<option value="{n}">{n}</option>' for n in networks)
+            if not options:
+                options = '<option value="">No networks found — refresh</option>'
+            self._respond(200, HTML_FORM.format(ssid_options=options))
+            return
+
+        if self.path == "/stop-hotspot":
+            html = HTML_APP_WIFI_CONNECTING.replace(
+                "<h2>Connecting…</h2>",
+                "<h2>Done!</h2>"
+            ).replace(
+                "The hotspot is shutting down.<br><br>\n    Reconnect your phone to your home WiFi,<br>then close this page and use <strong style=\"color:var(--accent)\">Bot Setup</strong> in the app.",
+                "The hotspot is shutting down.<br><br>You can close this page."
+            )
+            self._respond(200, html)
+            def _stop():
+                import time
+                time.sleep(1)
+                subprocess.run(["nmcli", "connection", "down", "Hotspot"],
+                               capture_output=True, timeout=10)
+            threading.Thread(target=_stop, daemon=True).start()
+            return
+
         ssid          = params.get("ssid", [""])[0]
         wifi_password = params.get("wifi_password", [""])[0]
 
-        hostname = socket.gethostname()
-        next_url = f"http://{hostname}.local:5678" if PRODUCTION else "http://localhost:5678"
-        page = HTML_SUCCESS.replace("HOSTNAME_URL", next_url)
-        self._respond(200, page)
+        if _from_app:
+            self._respond(200, HTML_APP_WIFI_CONNECTING)
+        else:
+            hostname = socket.gethostname()
+            next_url = f"http://{hostname}.local:5678" if PRODUCTION else "http://localhost:5678"
+            page = HTML_SUCCESS.replace("HOSTNAME_URL", next_url)
+            self._respond(200, page)
         threading.Thread(
             target=apply_config,
             args=(ssid, wifi_password),
