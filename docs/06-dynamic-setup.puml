@@ -1,0 +1,100 @@
+@startuml PicoGallery – Dynamic: Device Setup Flow
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam sequenceArrowColor #555555
+skinparam sequenceLifeLineBorderColor #888888
+skinparam sequenceGroupBackgroundColor #FFF8E1
+skinparam sequenceGroupBorderColor #F9A825
+skinparam defaultFontName "Helvetica"
+
+title PicoGallery — Device Setup Flow (Dynamic View)
+
+participant "Mobile App" as App
+participant "startup.sh" as Boot
+participant "provision.py\n:80" as Prov
+participant "web_creator.py\n:5678" as WC
+participant "bot.py\n:3457" as Bot
+participant "cloudflared" as CF
+participant "Telegram API" as TG
+
+== First Boot ==
+
+Boot -> Boot : WiFi flag missing?
+Boot -> Prov : start (hotspot mode)
+note right of Prov
+  Pi creates "Helles-Setup" hotspot
+  IP: 10.42.0.1
+end note
+
+App -> Prov : GET /?mode=app\n(phone on hotspot)
+Prov --> App : WiFi form
+
+App -> Prov : POST /save-wifi\n{ssid, password}
+Prov -> Prov : nmcli connect + write .wifi_configured
+Prov --> App : "WiFi Connecting…" page
+
+Boot -> Boot : .wifi_configured detected\nwait for internet (ping 8.8.8.8)
+
+== Bot Creation ==
+
+Boot -> WC   : systemctl start botcreator\n(wait for TELEGRAM_TOKEN + CHAT_ID in .env)
+
+App -> WC    : GET /?mode=app\n(Bot Setup button)
+WC --> App   : phone number form
+
+App -> WC    : POST phone → Telegram code flow
+note right of WC
+  Full headless BotFather flow:
+  1. my.telegram.org API credentials
+  2. Create bot via BotFather
+  3. Send /start, receive chat_id
+end note
+
+WC -> WC     : write TELEGRAM_TOKEN + CHAT_ID\nto Chatbot/.env
+WC --> App   : done page ("close this page")
+
+App -> WC    : GET /config
+WC --> App   : {"token": "...", "chat_id": "..."}
+App -> App   : save to SecureStore (botConfig)
+
+Boot -> Boot : credentials detected → break loop
+
+== Service Start ==
+
+Boot -> Bot  : systemctl start chatbot
+Boot -> CF   : systemctl start cloudflared
+
+CF -> CF     : acquire tunnel URL
+CF -> CF     : write URL to tunnel.url
+
+Bot -> TG    : sendMessage "✅ bot started"
+Bot -> Bot   : read tunnel.url
+Bot -> TG    : sendMessage + pinChatMessage\n🔗 https://xxx.trycloudflare.com
+
+== URL Discovery (Local Network) ==
+
+App -> Bot   : GET :3457/url
+Bot --> App  : {"url": "https://xxx.trycloudflare.com"}
+App -> App   : setServer(url) → login screen
+
+== URL Discovery (Remote / Mobile Data) ==
+
+App -> App   : discoverPiHost() → all fail\n(Pi not on same network)
+App -> TG    : getChat?chat_id=...\n(using stored botConfig)
+TG --> App   : pinned_message.text\n"🔗 https://xxx.trycloudflare.com"
+App -> App   : extract URL via regex\nsetServer(url) → login screen
+
+== Tunnel URL Change ==
+
+CF -> CF     : tunnel restarts → new URL
+CF -> CF     : overwrite tunnel.url
+Bot -> Bot   : watcher detects change (every 10 s)
+Bot -> TG    : sendMessage + pinChatMessage\n🔗 https://yyy.trycloudflare.com
+
+note right of Bot
+  App will pick up the new URL
+  on next "Connect to Server"
+  via local :3457/url or Telegram pin
+end note
+
+@enduml

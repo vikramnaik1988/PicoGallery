@@ -1113,6 +1113,12 @@ a { color: inherit; text-decoration: none; }
         Upload
       </button>
 
+      <div class="nav-section-label">Intelligence</div>
+      <button class="nav-item" onclick="navigate('ai')">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.46 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.46 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/></svg>
+        AI Analysis
+      </button>
+
       <div class="nav-section-label">Account</div>
       <button class="nav-item" id="admin-nav-item" onclick="navigate('admin')" style="display:none">
         <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 1 0-16 0"/></svg>
@@ -1236,6 +1242,8 @@ a { color: inherit; text-decoration: none; }
       <div id="view-settings" class="view">
         <div id="settings-container"></div>
       </div>
+
+      <div id="view-ai" class="view"></div>
 
     </div><!-- #content -->
   </main>
@@ -1493,6 +1501,7 @@ const viewTitles = {
   upload: ['Upload', 'Drag & drop or select files'],
   admin: ['Admin', 'User management'],
   settings: ['Settings', ''],
+  ai:       ['AI Analysis', 'Analyse photos for faces, objects, scenes & text'],
 };
 
 function navigate(view) {
@@ -1529,7 +1538,69 @@ async function renderView(view) {
     case 'upload':     renderUploadView(); break;
     case 'admin':      await renderAdmin(); break;
     case 'settings':   renderSettings(); break;
+    case 'ai':         renderAI(); break;
   }
+}
+
+async function renderAI() {
+  const el = document.getElementById('view-ai');
+  if (!el) return;
+  el.innerHTML = `
+    <div style="max-width:520px;margin:40px auto;display:flex;flex-direction:column;gap:20px;">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.46 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.46 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/></svg>
+          <span style="font-weight:600;color:var(--text);">Photo Analysis</span>
+        </div>
+        <p style="color:var(--text2);font-size:13px;margin:0 0 20px;">
+          Analyses every photo for faces, objects, scenes and text.
+          Results are stored as searchable tags. Runs in the background — you can continue using the gallery.
+        </p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="btn-primary" id="ai-run-btn" onclick="triggerAI()">Run AI Analysis</button>
+          <button class="btn-ghost" onclick="checkAIStatus()">Refresh Status</button>
+        </div>
+        <div id="ai-status" style="margin-top:16px;font-size:13px;color:var(--text2);"></div>
+      </div>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;">
+        <div style="font-weight:600;color:var(--text);margin-bottom:12px;">What gets analysed</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;color:var(--text2);">
+          <div>🧑 Faces &amp; embeddings</div>
+          <div>📦 Objects (dog, car, hat…)</div>
+          <div>🎨 Dominant colours</div>
+          <div>🌄 Scene (beach, forest…)</div>
+          <div>📍 GPS &amp; date from EXIF</div>
+          <div>🔤 Text in photos (OCR)</div>
+        </div>
+      </div>
+    </div>`;
+  checkAIStatus();
+}
+
+async function triggerAI() {
+  const btn = document.getElementById('ai-run-btn');
+  const status = document.getElementById('ai-status');
+  btn.disabled = true;
+  btn.textContent = 'Queuing…';
+  status.textContent = '';
+  try {
+    await api('POST', '/vision/analyse-all');
+    status.textContent = 'Indexing started…';
+    btn.textContent = 'Queued ✓';
+    setTimeout(checkAIStatus, 3000);
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = 'Run AI Analysis';
+  }
+}
+
+async function checkAIStatus() {
+  const status = document.getElementById('ai-status');
+  if (!status) return;
+  const data = await api('GET', '/vision/status');
+  status.textContent = data?.message || 'Could not load status.';
 }
 
 // ──────────────────────────────────────────────────────────

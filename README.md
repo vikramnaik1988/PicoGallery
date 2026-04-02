@@ -158,6 +158,77 @@ See [API_DOCUMENTATION.md](./API_DOCUMENTATION.md) for complete endpoint referen
 
 ---
 
+## Helles-Galerie Deployment (Raspberry Pi)
+
+The `deploy/` directory contains a full zero-touch setup system for running PicoGallery on a Raspberry Pi with remote access via Cloudflare Tunnel and a Telegram bot.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  Raspberry Pi                        │
+│                                                     │
+│  startup.service → startup.sh                       │
+│      │                                              │
+│      ├─ WiFi not configured? → provision.py (AP)    │
+│      ├─ No bot credentials?  → botcreator service   │
+│      └─ All good → start services                   │
+│                                                     │
+│  picogallery.service   — gallery on :3456           │
+│  chatbot.service       — Telegram bot on :3457      │
+│  botcreator.service    — Bot Creator UI on :5678    │
+│  cloudflared.service   — public tunnel              │
+└─────────────────────────────────────────────────────┘
+```
+
+### Services
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| `picogallery` | 3456 | PicoGallery server |
+| `chatbot` | 3457 | Telegram bot + URL API |
+| `botcreator` | 5678 | Web UI to create Telegram bot |
+| `cloudflared` | — | Cloudflare Tunnel (public URL) |
+
+### First-Time Setup
+
+1. Flash Raspberry Pi OS, clone repo to `/home/admin/PicoGallery`
+2. Install and enable the startup service:
+```bash
+sudo cp deploy/startup.service /etc/systemd/system/
+sudo cp deploy/botcreator.service /etc/systemd/system/
+sudo cp deploy/chatbot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable startup botcreator chatbot
+```
+3. On first boot, the Pi creates a WiFi hotspot **Helles-Setup**
+4. Connect your phone to the hotspot, open `http://10.42.0.1` and enter your home WiFi credentials
+5. After WiFi connects, open the mobile app → **Setup a new device → Bot Setup**
+6. Follow the Bot Creator web UI to create a Telegram bot
+7. The gallery starts automatically and sends the public URL to your Telegram bot
+
+### Remote Access
+
+The Telegram bot pins the current public URL as a message in your chat. The mobile app reads this automatically — no manual URL entry needed. When Cloudflare assigns a new URL (e.g. after restart), the bot detects the change within 10 seconds and re-pins.
+
+### bot.py HTTP API (port 3457)
+
+| Endpoint | Response |
+|----------|----------|
+| `GET /url` | `{"url": "https://xxx.trycloudflare.com"}` |
+| `GET /bot-config` | `{"token": "...", "chat_id": "..."}` |
+| `GET /start-botcreator` | Starts botcreator on demand |
+
+### Telegram Bot Commands
+
+| Command | Description |
+|---------|-------------|
+| `/url` | Returns the current gallery URL |
+| `/status` | Shows if the gallery server is running |
+| `/help` | Lists available commands |
+
+---
+
 ## Reverse Proxy (HTTPS via Nginx)
 
 ```nginx

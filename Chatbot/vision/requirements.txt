@@ -1,0 +1,19 @@
+# vision/ — photo analysis pipeline requirements
+# All inference uses cv2.dnn (OpenCV DNN backend) — no onnxruntime needed.
+# Safe for armv7l (Raspberry Pi 3 B+).
+
+# Core — OpenCV DNN handles ONNX + Caffe models natively
+opencv-python-headless>=4.9
+numpy>=1.24.0
+
+# EXIF / metadata
+Pillow>=10.0.0
+
+# OCR (optional — also needs: sudo apt install tesseract-ocr)
+pytesseract>=0.3.10
+
+# NLP query parser (optional — falls back to regex if unavailable)
+# After install: python -m spacy download en_core_web_sm
+spacy>=3.7.0
+
+# NOTE: No torch, no onnxruntime — cv2.dnn is the only inference engine.

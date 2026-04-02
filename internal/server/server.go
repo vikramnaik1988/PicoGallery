@@ -19,6 +19,7 @@ import (
 	"github.com/picogallery/picogallery/internal/auth"
 	"github.com/picogallery/picogallery/internal/browser"
 	"github.com/picogallery/picogallery/internal/search"
+	"github.com/picogallery/picogallery/internal/vision"
 	"github.com/picogallery/picogallery/migrations"
 )
 
@@ -101,6 +102,7 @@ func (s *Server) Router() http.Handler {
 	browserH := browser.NewHandler(s.db, s.originalsRoot)
 	searchH := search.NewHandler(s.db)
 	infoH := NewInfoHandler(s.db, s.originalsRoot, s.storageRoot, version, s.assetSvc)
+	visionH := vision.NewHandler("")
 
 	r.Route("/api/v1", func(r chi.Router) {
 
@@ -170,6 +172,10 @@ func (s *Server) Router() http.Handler {
 
 			// Search
 			r.Get("/search", searchH.Search)
+
+			// Vision / AI
+			r.Post("/vision/analyse-all", visionH.AnalyseAll)
+			r.Get("/vision/status", visionH.Status)
 
 			// Server admin
 			r.Group(func(r chi.Router) {

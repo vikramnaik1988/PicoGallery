@@ -3,9 +3,20 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
+
+# Vision search (lives in Chatbot/vision/)
+sys.path.insert(0, os.path.dirname(__file__))
+try:
+    from vision.query_parser import parse as parse_query
+    from vision import store as vision_store
+    _vision_ok = True
+except Exception as _e:
+    _vision_ok = False
+    logging.getLogger(__name__).warning(f"Vision search unavailable: {_e}")
 
 _botcreator_proc = None
 from telegram import Update
@@ -44,7 +55,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Helles-Galerie Bot\n\n"
         "/url    - Current gallery URL\n"
         "/status - Server status\n"
-        "/help   - Show this message"
+        "/search <query> - Search photos\n"
+        "/index  - Index all photos for AI search\n"
+        "/help   - Show this message\n\n"
+        "Or just type what you're looking for:\n"
+        "  dog beach\n"
+        "  person red hat\n"
+        "  cat indoor"
     )
 
 
@@ -74,6 +91,97 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         msg = "❌ Server is not running"
     await update.message.reply_text(msg)
+
+
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/search <query> — search indexed photos by description."""
+    query = " ".join(context.args)
+    if not query:
+        await update.message.reply_text(
+            "Usage: /search <description>\n"
+            "Examples:\n"
+            "  /search dog\n"
+            "  /search person red beach\n"
+            "  /search cat indoor"
+        )
+        return
+    await _do_search(update, query)
+
+
+async def natural_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle plain text messages as photo search queries."""
+    query = update.message.text.strip()
+    if not query or query.startswith("/"):
+        return
+    await _do_search(update, query)
+
+
+async def _do_search(update: Update, query: str) -> None:
+    if not _vision_ok:
+        await update.message.reply_text("Vision search not available.")
+        return
+
+    total = vision_store.count()
+    if total == 0:
+        await update.message.reply_text(
+            "No photos indexed yet.\n"
+            "Run the indexer first:\n"
+            "  cd ~/PicoGallery/Chatbot && python3 -m vision.indexer"
+        )
+        return
+
+    parsed = parse_query(query)
+    results = vision_store.search(
+        objects=parsed.objects,
+        scenes=parsed.scenes,
+        attributes=parsed.attributes,
+        persons=parsed.persons,
+    )
+
+    if not results:
+        await update.message.reply_text(
+            f"No photos found for: {query}\n"
+            f"(searched {total} indexed photos)"
+        )
+        return
+
+    lines = [f"Found {len(results)} photo(s) for '{query}':\n"]
+    for r in results[:10]:
+        scene = f" [{r['scene']}]" if r['scene'] else ""
+        faces = f" 👤×{r['faces']}" if r['faces'] else ""
+        lines.append(f"📷 {r['filename']}{scene}{faces}")
+
+    if len(results) > 10:
+        lines.append(f"...and {len(results) - 10} more.")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def index_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/index — start background indexing of all photos."""
+    await update.message.reply_text(
+        "Starting photo indexing in background…\n"
+        "This may take a while. I'll message you when done."
+    )
+    asyncio.create_task(_run_indexer(update))
+
+
+async def _run_indexer(update: Update) -> None:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "python3", "-m", "vision.indexer",
+            cwd=os.path.dirname(__file__),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await proc.communicate()
+        total = vision_store.count()
+        await update.message.reply_text(
+            f"Indexing complete.\n"
+            f"Total photos in database: {total}"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Indexer error: {e}")
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -187,6 +295,9 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("url", url_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(CommandHandler("index", index_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, natural_search))
     app.add_error_handler(error_handler)
 
     threading.Thread(target=_start_url_server, daemon=True).start()

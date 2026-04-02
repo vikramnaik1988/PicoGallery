@@ -115,9 +115,18 @@ while true; do
     done
 
     if ! $CONNECTED; then
-        log "No internet after 120s — clearing WiFi config and re-provisioning."
-        rm -f "$WIFI_FLAG"
-        continue
+        if $NEW_CONFIG; then
+            # Fresh WiFi setup but no internet — credentials may be wrong
+            log "No internet after 120s on new WiFi config — re-provisioning."
+            rm -f "$WIFI_FLAG"
+            continue
+        else
+            # Existing WiFi config — internet just slow (common on reboot)
+            # Keep waiting instead of wiping a known-good config
+            log "No internet after 120s — WiFi config preserved, retrying in 30s..."
+            sleep 30
+            continue
+        fi
     fi
 
     # ── 3. Chatbot check (behaviour differs: new config vs existing) ──────────

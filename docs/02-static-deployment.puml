@@ -7,64 +7,96 @@ skinparam componentBackgroundColor #FFFFFF
 skinparam ArrowColor #555555
 skinparam defaultFontName "Helvetica"
 
-title PicoGallery — Deployment View (Hybrid Split-Drive)
+title PicoGallery — Deployment View
 
-node "Client Device\n(Browser / Mobile App)" as Client {
+node "Mobile App\n(iOS / Android)" as Mobile {
+  component "Helles-Galerie App\n(React Native / Expo)" as App
+  component "SecureStore\n(botConfig · piHost)" as SS
+  App --> SS
+}
+
+node "Web Browser" as Browser {
   component "SPA  web/index.html" as SPA
   component "localStorage\n(pg_token · pg_server)" as LS
   SPA --> LS
 }
 
-node "SBC / Linux Server\n(e.g. Radxa Cubie A7S — 8-core, 8 GB RAM)" as Server {
+node "Raspberry Pi\n(Raspbian OS)" as Server {
 
-  node "128 GB USB SSD  (fast random I/O)" as SSD {
+  component "startup.service\n→ startup.sh\n(orchestrator)" as Startup
+
+  node "128 GB USB SSD" as SSD {
     database "picogallery.db\n(SQLite WAL)" as DB
-    storage "thumbnails/\nblur · small · preview · large" as Thumbs
+    storage "thumbnails/" as Thumbs
     storage "tmp/  (upload staging)" as Tmp
+    storage "tunnel.url\n(current public URL)" as TunnelFile
   }
 
-  node "1 TB HDD  (sequential I/O, ~120 MB/s)" as HDD {
+  node "1 TB HDD" as HDD {
     storage "originals/\n{userID}/{YYYY}/{MM}/" as Originals
   }
 
-  component "picogallery binary\n(CGO_ENABLED=0, statically linked)" as Binary {
-    component "chi Router  :3456" as Router
-    component "Auth Service\nJWT · bcrypt · API keys" as Auth
-    component "Asset Service\nWorker pool (4 goroutines)" as AssetSvc
-    component "Album · Browser · Search\nHandlers" as OtherH
-    component "Info Handler\nrescan · stats · jobs" as InfoH
+  component "picogallery\n:3456" as Binary {
+    component "chi Router" as Router
+    component "Auth / Assets\nAlbums / Search" as Handlers
   }
 
-  component "cloudflared\n(Cloudflare Tunnel agent)" as CFd
+  component "chatbot.service\nbot.py  :3457\n/url · /bot-config" as Bot
 
+  component "botcreator.service\nweb_creator.py  :5678\n/config · ?mode=app" as BotCreator
+
+  component "provision.py  :80\n(WiFi hotspot UI\n?mode=app)" as Provision
+
+  component "cloudflared\n(Cloudflare tunnel)" as CFd
+
+  Startup --> Provision     : if no WiFi
+  Startup --> BotCreator    : if no bot creds
+  Startup --> Binary        : systemctl start
+  Startup --> Bot           : systemctl start
+  Startup --> CFd           : systemctl start
+
+  CFd --> Router            : localhost:3456
+  CFd --> TunnelFile        : writes URL on connect
+  Bot --> TunnelFile        : reads URL (watches for changes)
   Binary --> SSD
   Binary --> HDD
-  CFd --> Router : localhost:3456
 }
 
-node "Cloudflare Edge\n(Global CDN / Zero Trust)" as CFEdge {
+node "Cloudflare Edge" as CFEdge {
   component "Tunnel endpoint" as CFZT
 }
 
-Client  --> CFEdge : HTTPS :443  gallery.example.com
-CFEdge --> CFd     : Secure outbound tunnel (QUIC)
+node "Telegram API" as TG {
+  component "Bot API\ngetChat · sendMessage\npinChatMessage" as TGAPI
+}
 
-note right of SSD
-  Fast random I/O needed for:
-  • DB metadata queries (gallery scroll)
-  • Thumbnail reads (many small JPEGs)
-  • Upload staging (fast initial write)
+Mobile  --> CFEdge  : HTTPS gallery URL\n(from Telegram or local)
+Browser --> CFEdge  : HTTPS :443
+CFEdge  --> CFd     : QUIC tunnel
+
+Mobile  --> Bot     : :3457/url\n:3457/bot-config\n(local network)
+Mobile  --> BotCreator : :5678/?mode=app\n(bot setup)
+Mobile  --> Provision  : :80/?mode=app\n(wifi setup)
+Mobile  --> TGAPI   : getChat → pinned_message\n(remote URL discovery)
+
+Bot     --> TGAPI   : sendMessage · pinChatMessage\n(URL update on tunnel change)
+
+note right of TunnelFile
+  Written by cloudflared on connect.
+  Bot watches every 10 s and
+  re-pins to Telegram on change.
 end note
 
-note right of HDD
-  Sequential I/O acceptable for:
-  • Original photo / video storage
-  • Large file reads (download)
+note right of SS
+  botConfig: { token, chatId }
+  piHost: last known Pi IP
+  Used for remote URL discovery
+  via Telegram when off local network.
 end note
 
 note bottom of Binary
   Optional tools on PATH:
-  • imagemagick (magick/convert) — HEIC support
+  • imagemagick — HEIC support
   • ffmpeg — video thumbnails (future)
 end note
 
