@@ -386,29 +386,44 @@ func generateThumbnails(job thumbJob) error {
 		}
 	}
 
+	// Generate all tiers in parallel — one goroutine per tier.
+	// The decoded image is read-only so sharing it is safe.
+	errs := make(chan error, len(thumbnailTiers))
+	var wg sync.WaitGroup
 	for _, spec := range thumbnailTiers {
-		var dst image.Image
-		if spec.square {
-			dst = cropSquare(img, spec.maxSide)
-		} else {
-			dst = resizeFit(img, spec.maxSide)
-		}
-
-		dir := filepath.Join(job.thumbRoot, spec.name, job.assetID[:2])
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return err
-		}
-		out, err := os.Create(filepath.Join(dir, job.assetID+".jpg"))
-		if err != nil {
-			return err
-		}
-
-		q := spec.quality
-		if q == 0 {
-			q = job.quality
-		}
-		err = jpeg.Encode(out, dst, &jpeg.Options{Quality: q})
-		out.Close()
+		wg.Add(1)
+		go func(s thumbSpec) {
+			defer wg.Done()
+			var dst image.Image
+			if s.square {
+				dst = cropSquare(img, s.maxSide)
+			} else {
+				dst = resizeFit(img, s.maxSide)
+			}
+			dir := filepath.Join(job.thumbRoot, s.name, job.assetID[:2])
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				errs <- err
+				return
+			}
+			out, err := os.Create(filepath.Join(dir, job.assetID+".jpg"))
+			if err != nil {
+				errs <- err
+				return
+			}
+			q := s.quality
+			if q == 0 {
+				q = job.quality
+			}
+			err = jpeg.Encode(out, dst, &jpeg.Options{Quality: q})
+			out.Close()
+			if err != nil {
+				errs <- err
+			}
+		}(spec)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
 		if err != nil {
 			return err
 		}

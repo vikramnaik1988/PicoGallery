@@ -45,7 +45,13 @@ func (h *Handler) AnalyseAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return final count from DB
-	count := h.countIndexed(chatbotDir)
+	dbPath := filepath.Join(chatbotDir, "vision_metadata.db")
+	db, err := sql.Open("sqlite", dbPath)
+	count := 0
+	if err == nil {
+		db.QueryRow("SELECT COUNT(*) FROM photos").Scan(&count)
+		db.Close()
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"indexed": count,
