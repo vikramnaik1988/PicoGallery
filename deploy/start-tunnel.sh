@@ -23,17 +23,24 @@ send_telegram() {
   fi
 }
 
-LAST_URL=""
-
-cloudflared tunnel --protocol http2 --url http://localhost:3456 2>&1 | while IFS= read -r line; do
-  echo "$line"
-  if [[ "$line" == *"trycloudflare.com"* ]]; then
-    url=$(echo "$line" | grep -oP 'https://[a-z0-9\-]+\.trycloudflare\.com')
-    if [[ -n "$url" && "$url" != "$LAST_URL" ]]; then
-      LAST_URL="$url"
-      echo "$url" > "$TUNNEL_FILE"
-      echo "[tunnel] URL saved: $url"
-      send_telegram "🔗 Helles-Galerie is online: $url"
+while true; do
+  LAST_URL=""
+  cloudflared tunnel --protocol http2 --url http://localhost:3456 2>&1 | while IFS= read -r line; do
+    echo "$line"
+    if [[ "$line" == *"Tunnel not found"* || "$line" == *"Unauthorized"* ]]; then
+      echo "[tunnel] Tunnel expired, restarting..."
+      pkill -f "cloudflared tunnel" 2>/dev/null
     fi
-  fi
+    if [[ "$line" == *"trycloudflare.com"* ]]; then
+      url=$(echo "$line" | grep -oP 'https://[a-z0-9\-]+\.trycloudflare\.com')
+      if [[ -n "$url" && "$url" != "$LAST_URL" ]]; then
+        LAST_URL="$url"
+        echo "$url" > "$TUNNEL_FILE"
+        echo "[tunnel] URL saved: $url"
+        send_telegram "🔗 Helles-Galerie is online: $url"
+      fi
+    fi
+  done
+  echo "[tunnel] cloudflared exited, restarting in 5s..."
+  sleep 5
 done
