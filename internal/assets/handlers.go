@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/picogallery/picogallery/internal/auth"
@@ -337,6 +338,8 @@ func (h *Handler) ServeOriginal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", mt)
+	// Original files are immutable — same asset ID always yields the same bytes.
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	http.ServeFile(w, r, path)
 }
 
@@ -481,23 +484,76 @@ func (h *Handler) BulkDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "BAD_REQUEST", "Invalid body.", http.StatusBadRequest)
 		return
 	}
-	deleted := 0
-	for _, id := range req.IDs {
-		if !h.userOwnsAsset(user.ID, id) {
-			continue
-		}
-		var origPath string
-		_ = h.db.QueryRow(`SELECT original_path FROM assets WHERE id=?`, id).Scan(&origPath)
-		_, _ = h.db.Exec(`DELETE FROM assets WHERE id=?`, id)
-		if origPath != "" {
-			_ = os.Remove(origPath)
-		}
-		for _, sz := range []string{"blur", "small", "preview", "large"} {
-			_ = os.Remove(filepath.Join(h.svc.thumbRoot, sz, id[:2], id+".jpg"))
-		}
-		deleted++
+	if len(req.IDs) == 0 {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": 0, "failed": 0})
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": deleted, "failed": len(req.IDs) - deleted})
+
+	// Fetch paths for owned assets in one query
+	placeholders := make([]string, len(req.IDs))
+	args := make([]interface{}, 0, len(req.IDs)+1)
+	args = append(args, user.ID)
+	for i, id := range req.IDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	inClause := strings.Join(placeholders, ",")
+
+	type fileRecord struct {
+		id, path string
+	}
+	rows, err := h.db.Query(
+		`SELECT id, original_path FROM assets WHERE user_id=? AND id IN (`+inClause+`)`,
+		args...)
+	if err != nil {
+		writeError(w, "INTERNAL_ERROR", "Query failed.", http.StatusInternalServerError)
+		return
+	}
+	var records []fileRecord
+	for rows.Next() {
+		var rec fileRecord
+		_ = rows.Scan(&rec.id, &rec.path)
+		records = append(records, rec)
+	}
+	rows.Close()
+
+	if len(records) == 0 {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": 0, "failed": len(req.IDs)})
+		return
+	}
+
+	// Batch-delete from DB in one statement
+	delArgs := make([]interface{}, 0, len(records)+1)
+	delArgs = append(delArgs, user.ID)
+	delPlaceholders := make([]string, len(records))
+	for i, rec := range records {
+		delPlaceholders[i] = "?"
+		delArgs = append(delArgs, rec.id)
+	}
+	_, _ = h.db.Exec(
+		`DELETE FROM assets WHERE user_id=? AND id IN (`+strings.Join(delPlaceholders, ",")+`)`,
+		delArgs...)
+
+	// Delete files in parallel
+	var wg sync.WaitGroup
+	for _, rec := range records {
+		wg.Add(1)
+		go func(r fileRecord) {
+			defer wg.Done()
+			if r.path != "" {
+				_ = os.Remove(r.path)
+			}
+			for _, sz := range []string{"blur", "small", "preview", "large"} {
+				_ = os.Remove(filepath.Join(h.svc.thumbRoot, sz, r.id[:2], r.id+".jpg"))
+			}
+		}(rec)
+	}
+	wg.Wait()
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"deleted": len(records),
+		"failed":  len(req.IDs) - len(records),
+	})
 }
 
 // GET /api/v1/assets/timeline

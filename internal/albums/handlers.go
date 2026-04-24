@@ -109,15 +109,56 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	var total int
 	_ = h.db.QueryRow(`SELECT COUNT(*) FROM album_assets WHERE album_id=?`, id).Scan(&total)
 
-	rows, _ := h.db.Query(`SELECT asset_id FROM album_assets WHERE album_id=? ORDER BY added_at DESC LIMIT ? OFFSET ?`,
-		id, pageSize, offset)
+	// JOIN to return full asset objects — eliminates N+1 fetches on the client.
+	rows, _ := h.db.Query(`
+		SELECT a.id, a.filename, a.media_type, a.file_size_bytes, a.width, a.height,
+		       a.duration_seconds, a.taken_at, a.created_at, a.is_favorited, a.is_archived,
+		       a.checksum_sha256, a.exif_make, a.exif_model, a.exif_gps_lat, a.exif_gps_lng,
+		       a.exif_focal_mm, a.exif_aperture, a.exif_iso, a.exif_shutter
+		FROM album_assets aa
+		JOIN assets a ON a.id = aa.asset_id
+		WHERE aa.album_id=?
+		ORDER BY aa.added_at DESC
+		LIMIT ? OFFSET ?`, id, pageSize, offset)
 	defer rows.Close()
 
-	assets := []interface{}{}
+	assets := []map[string]interface{}{}
 	for rows.Next() {
-		var aid string
-		_ = rows.Scan(&aid)
-		assets = append(assets, aid) // return IDs; client fetches full asset separately
+		var aid, filename, mediaType, checksum, createdAt string
+		var fileSize int64
+		var width, height *int
+		var dur *float64
+		var takenAt *string
+		var isFavorited, isArchived bool
+		var exifMake, exifModel, exifShutter *string
+		var exifLat, exifLng, exifFocal, exifAperture *float64
+		var exifISO *int
+		if err := rows.Scan(
+			&aid, &filename, &mediaType, &fileSize, &width, &height,
+			&dur, &takenAt, &createdAt, &isFavorited, &isArchived, &checksum,
+			&exifMake, &exifModel, &exifLat, &exifLng,
+			&exifFocal, &exifAperture, &exifISO, &exifShutter,
+		); err != nil {
+			continue
+		}
+		a := map[string]interface{}{
+			"id": aid, "filename": filename, "media_type": mediaType,
+			"file_size_bytes": fileSize, "width": width, "height": height,
+			"duration_seconds": dur, "taken_at": takenAt, "created_at": createdAt,
+			"is_favorited": isFavorited, "is_archived": isArchived,
+			"checksum_sha256": checksum,
+			"thumbnail_url": "/api/v1/assets/" + aid + "/thumbnail",
+			"original_url":  "/api/v1/assets/" + aid + "/original",
+		}
+		if exifMake != nil || exifModel != nil || exifLat != nil {
+			a["exif"] = map[string]interface{}{
+				"make": exifMake, "model": exifModel,
+				"gps_lat": exifLat, "gps_lng": exifLng,
+				"focal_length_mm": exifFocal, "aperture": exifAperture,
+				"iso": exifISO, "shutter_speed": exifShutter,
+			}
+		}
+		assets = append(assets, a)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -127,7 +168,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 			"created_at": created, "updated_at": updated,
 		},
 		"total": total, "page": page, "page_size": pageSize,
-		"asset_ids": assets,
+		"assets": assets,
 	})
 }
 

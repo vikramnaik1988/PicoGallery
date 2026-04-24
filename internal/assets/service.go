@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -94,18 +95,31 @@ func NewService(db *sql.DB, originalsRoot, thumbRoot, tmpRoot string, workers, q
 		_ = os.MkdirAll(dir, 0755)
 	}
 
+	// Auto-detect workers: leave one core free for serving requests.
+	// Config value of 0 means "auto". Clamp to [1, 8].
+	if workers <= 0 {
+		workers = runtime.NumCPU() - 1
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 8 {
+		workers = 8
+	}
+
 	s := &Service{
-		db:           db,
+		db:            db,
 		originalsRoot: originalsRoot,
-		thumbRoot:    thumbRoot,
-		tmpRoot:      tmpRoot,
-		thumbQ:       make(chan thumbJob, 512),
-		quality:      quality,
+		thumbRoot:     thumbRoot,
+		tmpRoot:       tmpRoot,
+		thumbQ:        make(chan thumbJob, 4096), // large buffer — burst uploads won't drop
+		quality:       quality,
 	}
 	for i := 0; i < workers; i++ {
 		s.wg.Add(1)
 		go s.thumbWorker()
 	}
+	log.Printf("thumbnail workers: %d (CPUs: %d)", workers, runtime.NumCPU())
 	return s
 }
 

@@ -19,8 +19,21 @@ func Run(db *sql.DB) error {
 }
 
 func enableWAL(db *sql.DB) error {
-	_, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;`)
-	return err
+	pragmas := []string{
+		`PRAGMA journal_mode=WAL`,
+		`PRAGMA synchronous=NORMAL`,
+		`PRAGMA foreign_keys=ON`,
+		`PRAGMA cache_size=-65536`,  // 64 MB page cache (negative = KB)
+		`PRAGMA temp_store=MEMORY`,  // temp tables in RAM
+		`PRAGMA mmap_size=268435456`, // 256 MB memory-mapped I/O
+		`PRAGMA busy_timeout=5000`,  // 5s retry on locked DB instead of immediate error
+	}
+	for _, p := range pragmas {
+		if _, err := db.Exec(p); err != nil {
+			return fmt.Errorf("%s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 // apply runs a list of SQL statements as a single migration version.
@@ -152,5 +165,15 @@ var all = [][]string{
 	{
 		`CREATE INDEX IF NOT EXISTS idx_assets_user_archived ON assets(user_id, is_archived)`,
 		`CREATE INDEX IF NOT EXISTS idx_assets_user_media    ON assets(user_id, media_type)`,
+	},
+
+	// Migration 4: indices for search queries (camera make/model, GPS, created_at ordering).
+	// Also adds covering index for GPS radius searches to avoid full table scan.
+	{
+		`CREATE INDEX IF NOT EXISTS idx_assets_exif_make  ON assets(user_id, exif_make)`,
+		`CREATE INDEX IF NOT EXISTS idx_assets_exif_model ON assets(user_id, exif_model)`,
+		`CREATE INDEX IF NOT EXISTS idx_assets_gps        ON assets(user_id, exif_gps_lat, exif_gps_lng) WHERE exif_gps_lat IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_assets_created    ON assets(user_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_jwt_expires       ON jwt_blocklist(expires_at)`,
 	},
 }

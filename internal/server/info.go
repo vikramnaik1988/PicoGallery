@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,11 +15,13 @@ import (
 )
 
 type InfoHandler struct {
-	db           *sql.DB
+	db            *sql.DB
 	originalsRoot string // HDD root — walked during rescan
-	storageRoot  string  // SSD root — used for disk-space stats
-	version      string
-	assetSvc     *assets.Service
+	storageRoot   string // SSD root — used for disk-space stats
+	version       string
+	assetSvc      *assets.Service
+	rescanRunning atomic.Bool // prevents concurrent rescans
+	rescanMu      sync.Mutex  // serialises rescan start
 }
 
 func NewInfoHandler(db *sql.DB, originalsRoot, storageRoot, version string, svc *assets.Service) *InfoHandler {
@@ -114,11 +118,20 @@ func (h *InfoHandler) Stats(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/server/rescan (admin)
 func (h *InfoHandler) Rescan(w http.ResponseWriter, r *http.Request) {
+	h.rescanMu.Lock()
+	defer h.rescanMu.Unlock()
+
+	if h.rescanRunning.Load() {
+		writeError(w, "RESCAN_RUNNING", "A rescan is already in progress.", http.StatusConflict)
+		return
+	}
+
 	jobID := "job_" + uuid.NewString()
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, _ = h.db.Exec(`INSERT INTO background_jobs(id,type,status,created_at) VALUES(?,?,?,?)`,
 		jobID, "rescan", "running", now)
 
+	h.rescanRunning.Store(true)
 	go h.runRescan(jobID)
 
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -127,6 +140,8 @@ func (h *InfoHandler) Rescan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *InfoHandler) runRescan(jobID string) {
+	defer h.rescanRunning.Store(false)
+
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, _ = h.db.Exec(`UPDATE background_jobs SET started_at=? WHERE id=?`, now, jobID)
 
@@ -178,6 +193,9 @@ func (h *InfoHandler) runRescan(jobID string) {
 			}
 		}
 	}
+
+	// Prune expired JWT blocklist entries to prevent unbounded table growth
+	_, _ = h.db.Exec(`DELETE FROM jwt_blocklist WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
 
 	done := time.Now().UTC().Format(time.RFC3339)
 	progress, _ := json.Marshal(map[string]int{
