@@ -3,6 +3,32 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<script>
+// Normalize rendering to 125% scaling regardless of monitor DPI setting.
+// When Windows scaling is 100% (devicePixelRatio=1), applies zoom=1.25 so
+// the app looks identical to a 125%-scaled monitor.
+(function () {
+  const TARGET = 1.15;
+  function applyZoom() {
+    var zoom = TARGET / (window.devicePixelRatio || 1);
+    var el = document.documentElement;
+    el.style.zoom = zoom;
+    el.style.height = (100 / zoom) + 'vh';
+    el.style.setProperty('--counter-zoom', 1 / zoom);
+  }
+  applyZoom();
+  // Re-apply whenever the window moves to a monitor with a different DPR
+  (function watch() {
+    var dpr = window.devicePixelRatio;
+    var mq = matchMedia('(resolution: ' + dpr + 'dppx)');
+    mq.addEventListener('change', function handler() {
+      mq.removeEventListener('change', handler);
+      applyZoom();
+      watch();
+    });
+  })();
+})();
+</script>
 <title>Helles-Galerie</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%23000'/><defs><linearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%23b8860b'/><stop offset='40%25' stop-color='%23f5c842'/><stop offset='60%25' stop-color='%23ffd700'/><stop offset='100%25' stop-color='%239a6f00'/></linearGradient></defs><polyline points='18,25 50,72 82,25' fill='none' stroke='url(%23g)' stroke-width='12' stroke-linejoin='round' stroke-linecap='round'/><path d='M33,25 Q50,10 67,25' fill='none' stroke='url(%23g)' stroke-width='9' stroke-linecap='round'/></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -38,8 +64,11 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
-  min-height: 100vh;
+  height: 100%;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 button { cursor: pointer; font-family: inherit; border: none; }
 input, textarea, select { font-family: inherit; }
@@ -52,7 +81,7 @@ a { color: inherit; text-decoration: none; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text3); }
 
 /* ── LAYOUT ───────────────────────────────────────────── */
-#app { display: flex; height: 100vh; overflow: hidden; }
+#app { display: flex; height: 100%; overflow: hidden; }
 #sidebar {
   width: var(--sidebar);
   min-width: var(--sidebar);
@@ -347,7 +376,7 @@ a { color: inherit; text-decoration: none; }
 
 .photo-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(var(--grid-cols, 6), 1fr);
   gap: 4px;
 }
 .photo-cell {
@@ -366,6 +395,9 @@ a { color: inherit; text-decoration: none; }
   display: block;
   opacity: 0;
   transition: opacity 0.3s;
+  image-rendering: auto;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
 }
 .photo-cell img.loaded { opacity: 1; }
 .photo-cell .skeleton {
@@ -525,6 +557,7 @@ a { color: inherit; text-decoration: none; }
 /* ── LIGHTBOX ─────────────────────────────────────────── */
 #lightbox {
   position: fixed; inset: 0;
+  zoom: var(--counter-zoom, 1);
   background: rgba(0,0,0,0.92);
   backdrop-filter: blur(12px);
   z-index: 100;
@@ -807,6 +840,7 @@ a { color: inherit; text-decoration: none; }
 /* ── MODAL ────────────────────────────────────────────── */
 .modal-overlay {
   position: fixed; inset: 0;
+  zoom: var(--counter-zoom, 1);
   background: rgba(0,0,0,0.6);
   backdrop-filter: blur(4px);
   z-index: 200;
@@ -1047,7 +1081,7 @@ a { color: inherit; text-decoration: none; }
 /* ── RESPONSIVE ───────────────────────────────────────── */
 @media (max-width: 768px) {
   #sidebar { display: none; }
-  .photo-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+  .photo-grid { grid-template-columns: repeat(var(--grid-cols, 3), 1fr); }
 }
 </style>
 </head>
@@ -1676,6 +1710,7 @@ async function renderGallery() {
     State.pendingUploads = null;
   }
 
+  updateGridCols();
   container.innerHTML = galleryGroupsHtml(allAssets) +
     `<div id="gallery-sentinel" style="height:1px"></div>`;
   container.querySelectorAll('img[data-src]').forEach(img => imgObserver.observe(img));
@@ -2744,14 +2779,22 @@ function onSearchInput(val) {
   }, 400);
 }
 
+function updateGridCols() {
+  const content = document.getElementById('content');
+  if (!content) return;
+  const available = content.clientWidth - 48; // subtract 24px padding each side
+  const cols = Math.max(2, Math.floor(available / State.gridSize));
+  document.documentElement.style.setProperty('--grid-cols', cols);
+}
+
 function cycleGridSize() {
   const sizes = [120, 160, 200, 240];
   const i = sizes.indexOf(State.gridSize);
   State.gridSize = sizes[(i + 1) % sizes.length];
-  document.querySelectorAll('.photo-grid').forEach(g => {
-    g.style.gridTemplateColumns = `repeat(auto-fill,minmax(${State.gridSize}px,1fr))`;
-  });
+  updateGridCols();
 }
+
+window.addEventListener('resize', updateGridCols);
 
 // ──────────────────────────────────────────────────────────
 // MODAL
