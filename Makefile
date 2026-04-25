@@ -1,4 +1,4 @@
-.PHONY: build run dev test clean docker arm64
+.PHONY: build run dev test clean docker arm64 deploy
 
 # Local build
 build:
@@ -40,6 +40,13 @@ docker-multiarch:
 		--platform linux/amd64,linux/arm64,linux/arm/v7 \
 		-t picogallery/picogallery:latest \
 		--push .
+
+# Deploy to Raspberry Pi over SSH
+# Usage: make deploy PI=192.168.1.50 ARCH=arm64
+PI   ?= raspberry.local
+ARCH ?= arm64
+deploy:
+	bash deploy/deploy-to-pi.sh $(PI) $(ARCH)
 
 clean:
 	rm -rf bin/
